@@ -2,12 +2,22 @@
 
 Repo-local cognitive memory for AI agents. Gives Claude Code, OpenCode, and other AI coding agents persistent, self-improving memory per project.
 
+## Install
+
+```bash
+# From source
+cargo install --path .
+
+# Or from crates.io (once published)
+cargo install cortex
+
+# Or download a release binary from GitHub
+# https://github.com/thrashr888/cortex/releases
+```
+
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
-
 # Initialize in any project
 cd /path/to/your/project
 cortex init
@@ -106,10 +116,10 @@ Add to `.claude/hooks/hooks.json` for automatic consolidation:
 [consolidation]
 auto_micro_threshold = 10    # Auto micro-sleep after N saves
 decay_threshold = 0.1        # Remove low-value consolidated memories
-model = "claude-haiku-4-5-20241022"  # Model for sleep/dream LLM calls
+model = "claude-haiku-4-5"  # Model for sleep/dream LLM calls
 ```
 
-Set `ANTHROPIC_API_KEY` for sleep/dream. Without it, only micro sleep (SQL-only) works.
+Set `ANTHROPIC_API_KEY` for direct API access, or use AWS credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` env vars or `~/.aws/credentials`) for Bedrock. Without LLM credentials, only micro sleep (SQL-only) works.
 
 ## What Gets Committed
 

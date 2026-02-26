@@ -165,20 +165,26 @@ fn apply_consolidation(
 }
 
 fn extract_json(text: &str) -> &str {
-    // Try to find JSON in markdown code blocks
+    // Try to find JSON in markdown code blocks.
+    // Use rfind for the closing fence since skill content may contain nested code blocks.
     if let Some(start) = text.find("```json") {
         let content = &text[start + 7..];
-        if let Some(end) = content.find("```") {
+        if let Some(end) = content.rfind("```") {
             return content[..end].trim();
         }
     }
     if let Some(start) = text.find("```") {
         let content = &text[start + 3..];
-        if let Some(end) = content.find("```") {
+        if let Some(end) = content.rfind("```") {
             return content[..end].trim();
         }
     }
-    // Assume the whole thing is JSON
+    // Try to find a JSON object directly
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            return text[start..=end].trim();
+        }
+    }
     text.trim()
 }
 

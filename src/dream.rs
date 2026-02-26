@@ -94,14 +94,19 @@ pub struct DreamResult {
 fn extract_json(text: &str) -> &str {
     if let Some(start) = text.find("```json") {
         let content = &text[start + 7..];
-        if let Some(end) = content.find("```") {
+        if let Some(end) = content.rfind("```") {
             return content[..end].trim();
         }
     }
     if let Some(start) = text.find("```") {
         let content = &text[start + 3..];
-        if let Some(end) = content.find("```") {
+        if let Some(end) = content.rfind("```") {
             return content[..end].trim();
+        }
+    }
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            return text[start..=end].trim();
         }
     }
     text.trim()

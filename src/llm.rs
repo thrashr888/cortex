@@ -135,7 +135,7 @@ async fn call_direct_api(prompt: &str, system: &str, config: &Config, api_key: &
     let client = reqwest::Client::new();
     let body = MessageRequest {
         model: config.consolidation.model.clone(),
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: system.to_string(),
         messages: vec![Message {
             role: "user".to_string(),
@@ -183,7 +183,7 @@ async fn call_bedrock(prompt: &str, system: &str, config: &Config) -> Result<Str
 
     let body = BedrockRequest {
         anthropic_version: "bedrock-2023-05-31".to_string(),
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: system.to_string(),
         messages: vec![Message {
             role: "user".to_string(),
