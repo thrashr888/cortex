@@ -7,7 +7,8 @@ use crate::db;
 pub fn init_cortex(base_dir: &Path) -> Result<()> {
     let cortex_dir = base_dir.join(".cortex");
     if cortex_dir.exists() {
-        anyhow::bail!(".cortex/ already exists in {}", base_dir.display());
+        eprintln!(".cortex/ already initialized in {}", base_dir.display());
+        return Ok(());
     }
 
     std::fs::create_dir_all(cortex_dir.join("skills"))?;
