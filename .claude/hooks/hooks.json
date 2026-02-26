@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "./target/debug/cortex sleep --quick",
+        "timeout": 15000
+      }
+    ],
+    "SubagentStop": [
+      {
+        "command": "./target/debug/cortex sleep --micro",
+        "timeout": 5000
+      }
+    ]
+  }
+}

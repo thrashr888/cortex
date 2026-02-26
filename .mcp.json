@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cortex": {
+      "command": "./target/debug/cortex",
+      "args": [
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,4 @@
+[consolidation]
+auto_micro_threshold = 10
+decay_threshold = 0.1
+model = "claude-haiku-4-5-20241022"
