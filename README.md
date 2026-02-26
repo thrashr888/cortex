@@ -1,6 +1,6 @@
 # cortex
 
-Repo-local cognitive memory for AI agents. Gives Claude Code, OpenCode, and other AI coding agents persistent, self-improving memory per project.
+Repo-local cognitive memory for AI agents. Gives Claude Code, OpenCode, and other AI coding agents persistent, self-improving memory per project — plus a global memory layer that carries your preferences across all projects.
 
 ## Install
 
@@ -27,7 +27,7 @@ cortex save "Always use eager loading for UserList queries" --type pattern
 cortex save "Fixed race condition in upload handler" --type bugfix
 cortex save "Chose SQLite over Postgres for simplicity" --type decision
 
-# Search memories
+# Search memories (includes global knowledge automatically)
 cortex recall "performance"
 cortex recall "upload" --limit 5
 
@@ -43,6 +43,35 @@ Cortex uses a two-database architecture inspired by how human memory works:
 - **consolidated.db** (committed) — Long-term memory. Merged patterns, resolved contradictions, high-confidence learnings.
 - **skills/** (committed) — Auto-generated markdown skill files from consolidated patterns.
 
+### Global Memory
+
+Cortex automatically maintains a system-wide memory at `~/.cortex/` for knowledge that applies across all projects — your name, preferred languages, tools, coding style, and workflow habits.
+
+**How it works**: You don't need to do anything special. During sleep consolidation, the LLM identifies personal preferences and cross-project patterns and automatically promotes them to `~/.cortex/`. Recall and context transparently search both project and global memory.
+
+```bash
+# Save something to any project
+cortex save "I prefer Rust and Go for CLI tools" --type preference
+
+# Sleep consolidates — the LLM promotes cross-project knowledge to global
+cortex sleep
+
+# From ANY project, global knowledge shows up automatically
+cortex recall "prefer"
+# → [global] Language preference: Rust and Go for CLI tools
+
+cortex context
+# → includes both project patterns and global knowledge
+```
+
+Global dream runs automatically (nightly) to find deeper patterns across your global knowledge. You can also trigger it manually:
+
+```bash
+cortex sleep --global    # Consolidate global store explicitly
+cortex dream --global    # Deep reflection on global knowledge
+cortex stats --global    # View global stats only
+```
+
 ### Three Modes
 
 **Wake** — Session start. Catches up any unconsolidated memories from interrupted sessions.
@@ -50,10 +79,10 @@ Cortex uses a two-database architecture inspired by how human memory works:
 cortex wake
 ```
 
-**Sleep** — Consolidation. Micro (SQL-only, instant) or Quick (1 LLM call, ~10s).
+**Sleep** — Consolidation. Micro (SQL-only, instant) or Quick (1 LLM call, ~10s). Automatically promotes cross-project knowledge to global.
 ```bash
 cortex sleep --micro    # Dedup + decay, no LLM, instant
-cortex sleep            # LLM-powered: consolidate, detect contradictions, generate skills
+cortex sleep            # LLM-powered: consolidate, promote globals, generate skills
 ```
 
 **Dream** — Deep reflection. Cross-session pattern mining, meta-learning.
@@ -67,10 +96,10 @@ cortex dream
 |---------|-------------|
 | `cortex init` | Initialize `.cortex/` in current directory |
 | `cortex save <text> --type <type>` | Save a memory (types: bugfix, decision, pattern, preference, observation) |
-| `cortex recall <query>` | FTS5 search with recency weighting |
-| `cortex stats` | Memory health (counts, last sleep) |
-| `cortex sleep [--micro]` | Run consolidation |
-| `cortex dream` | Deep reflection (2-3 LLM calls) |
+| `cortex recall <query>` | FTS5 search across project + global memory |
+| `cortex stats [--global]` | Memory health (counts, last sleep) |
+| `cortex sleep [--micro] [--global]` | Run consolidation |
+| `cortex dream [--global]` | Deep reflection (2-3 LLM calls) |
 | `cortex wake` | Session start catch-up + context output |
 | `cortex context [--compact]` | Output memory context for prompt injection |
 | `cortex mcp` | Start MCP stdio server |
@@ -93,7 +122,7 @@ Add to your project's `.mcp.json`:
 }
 ```
 
-Exposes 5 tools: `cortex_save`, `cortex_recall`, `cortex_context`, `cortex_sleep`, `cortex_stats`.
+Exposes 5 tools: `cortex_save`, `cortex_recall`, `cortex_context`, `cortex_sleep`, `cortex_stats`. All tools automatically include global memory — recall and context blend both stores, and sleep promotes cross-project patterns to global.
 
 ## Claude Code Hooks
 
@@ -129,20 +158,21 @@ Set `ANTHROPIC_API_KEY` for direct API access, or use AWS credentials (`AWS_ACCE
 | `.cortex/skills/*.md` | committed | Auto-generated skill files |
 | `.cortex/config.toml` | committed | Settings |
 | `.cortex/raw.db` | gitignored | Ephemeral session observations |
+| `~/.cortex/` | n/a | Global cross-project memory |
 
 ## Architecture
 
 ```
-Session start → cortex wake (catch up if needed)
+Session start → cortex wake (catch up if needed, blend global context)
   ↓
 Working... cortex save × N (micro sleep at threshold)
   ↓
-Session end → cortex sleep --quick (1 LLM call)
+Session end → cortex sleep --quick (consolidate + auto-promote to global)
   ↓
-Periodically → cortex dream (deep reflection)
+Nightly → auto global dream (cross-project pattern mining)
 ```
 
-~850 LOC Rust. SQLite + FTS5 for storage, Anthropic API for consolidation, JSON-RPC for MCP.
+~1000 LOC Rust. SQLite + FTS5 for storage, Anthropic API for consolidation, JSON-RPC for MCP.
 
 ## License
 

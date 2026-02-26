@@ -11,6 +11,7 @@ pub async fn wake(
     cons_conn: &Connection,
     config: &Config,
     cortex_dir: &std::path::Path,
+    global_cons_conn: Option<&Connection>,
 ) -> Result<String> {
     let uncons = db::get_unconsolidated_count(raw_conn)?;
 
@@ -26,5 +27,5 @@ pub async fn wake(
         }
     }
 
-    context::format_context(cons_conn, raw_conn, false)
+    context::format_context(cons_conn, raw_conn, global_cons_conn, false)
 }

@@ -65,6 +65,13 @@ pub struct SkillUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalPromotion {
+    pub content: String,
+    pub r#type: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsolidationResult {
     #[serde(default)]
     pub consolidations: Vec<Consolidation>,
@@ -76,6 +83,8 @@ pub struct ConsolidationResult {
     pub decayed: Vec<i64>,
     #[serde(default)]
     pub skill_updates: Vec<SkillUpdate>,
+    #[serde(default)]
+    pub global_promotions: Vec<GlobalPromotion>,
 }
 
 impl std::fmt::Display for Stats {

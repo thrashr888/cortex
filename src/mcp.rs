@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use crate::config;
 use crate::context;
 use crate::db;
+use crate::init;
+use crate::models;
 use crate::sleep;
 
 #[derive(Deserialize)]
@@ -35,7 +37,7 @@ struct JsonRpcError {
     message: String,
 }
 
-pub async fn run_mcp_server(cortex_dir: PathBuf, session_id: String) -> Result<()> {
+pub async fn run_mcp_server(cortex_dir: PathBuf, session_id: String, global_dir: Option<PathBuf>) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
@@ -62,7 +64,7 @@ pub async fn run_mcp_server(cortex_dir: PathBuf, session_id: String) -> Result<(
         };
 
         let id = req.id.clone().unwrap_or(Value::Null);
-        let result = handle_request(&req, &cortex_dir, &session_id).await;
+        let result = handle_request(&req, &cortex_dir, &session_id, &global_dir).await;
 
         let resp = match result {
             Ok(val) => JsonRpcResponse { jsonrpc: "2.0".into(), id, result: Some(val), error: None },
@@ -81,7 +83,7 @@ pub async fn run_mcp_server(cortex_dir: PathBuf, session_id: String) -> Result<(
     Ok(())
 }
 
-async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: &str) -> Result<Value> {
+async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: &str, global_dir: &Option<PathBuf>) -> Result<Value> {
     match req.method.as_str() {
         "initialize" => Ok(serde_json::json!({
             "protocolVersion": "2024-11-05",
@@ -96,19 +98,20 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
             "tools": [
                 {
                     "name": "cortex_save",
-                    "description": "Save a learning, decision, or pattern to project memory",
+                    "description": "Save a learning, decision, or pattern to project memory. Use global=true for cross-project knowledge like personal preferences.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "content": { "type": "string", "description": "What was learned or observed" },
-                            "type": { "type": "string", "description": "Type: bugfix, decision, pattern, preference, observation", "default": "observation" }
+                            "type": { "type": "string", "description": "Type: bugfix, decision, pattern, preference, observation", "default": "observation" },
+                            "global": { "type": "boolean", "description": "Save to global ~/.cortex/ instead of project (for cross-project knowledge)", "default": false }
                         },
                         "required": ["content"]
                     }
                 },
                 {
                     "name": "cortex_recall",
-                    "description": "Search project memory for relevant learnings",
+                    "description": "Search memory for relevant learnings. Searches both project and global memory automatically.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -120,7 +123,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                 },
                 {
                     "name": "cortex_context",
-                    "description": "Get current memory context for injection into agent prompts",
+                    "description": "Get current memory context for injection into agent prompts. Includes both project and global knowledge.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -130,7 +133,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                 },
                 {
                     "name": "cortex_sleep",
-                    "description": "Run memory consolidation. Use micro=true for fast SQL-only mode.",
+                    "description": "Run memory consolidation. Automatically promotes cross-project patterns to global memory.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -140,7 +143,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                 },
                 {
                     "name": "cortex_stats",
-                    "description": "Get memory health statistics",
+                    "description": "Get memory health statistics including global memory counts",
                     "inputSchema": { "type": "object", "properties": {} }
                 }
             ]
@@ -148,7 +151,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
         "tools/call" => {
             let tool_name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = req.params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
-            let text = call_tool(tool_name, &args, cortex_dir, session_id).await?;
+            let text = call_tool(tool_name, &args, cortex_dir, session_id, global_dir).await?;
             Ok(serde_json::json!({
                 "content": [{ "type": "text", "text": text }]
             }))
@@ -157,27 +160,62 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
     }
 }
 
-async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &str) -> Result<String> {
+async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &str, global_dir: &Option<PathBuf>) -> Result<String> {
     match name {
         "cortex_save" => {
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let mem_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("observation");
-            let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
-            let config = config::load_config(cortex_dir)?;
-            let id = db::save_memory(&raw_conn, content, mem_type, session_id)?;
+            let global = args.get("global").and_then(|v| v.as_bool()).unwrap_or(false);
 
-            let uncons = db::get_unconsolidated_count(&raw_conn)?;
-            if uncons >= config.consolidation.auto_micro_threshold as i64 {
-                let _ = sleep::micro_sleep(&raw_conn, &config);
+            if global {
+                let gd = init::ensure_global_dir()?;
+                let raw_conn = db::open_raw_db(&gd.join("raw.db"))?;
+                let id = db::save_memory(&raw_conn, content, mem_type, session_id)?;
+                Ok(format!("Saved global memory #{} (type: {})", id, mem_type))
+            } else {
+                let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
+                let config = config::load_config(cortex_dir)?;
+                let id = db::save_memory(&raw_conn, content, mem_type, session_id)?;
+
+                let uncons = db::get_unconsolidated_count(&raw_conn)?;
+                if uncons >= config.consolidation.auto_micro_threshold as i64 {
+                    let _ = sleep::micro_sleep(&raw_conn, &config);
+                }
+
+                Ok(format!("Saved memory #{} (type: {})", id, mem_type))
             }
-
-            Ok(format!("Saved memory #{} (type: {})", id, mem_type))
         }
         "cortex_recall" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
-            let memories = db::recall_memories(&raw_conn, query, limit)?;
+            let mut memories = db::recall_memories(&raw_conn, query, limit)?;
+
+            // Also search global consolidated DB
+            if let Some(gd) = global_dir {
+                if let Ok(global_cons) = db::open_consolidated_db(&gd.join("consolidated.db")) {
+                    let global_consolidated = db::get_all_consolidated(&global_cons).unwrap_or_default();
+                    let query_lower = query.to_lowercase();
+                    let query_words: Vec<&str> = query_lower.split_whitespace().collect();
+                    for m in global_consolidated {
+                        let content_lower = m.content.to_lowercase();
+                        if query_words.iter().any(|w| content_lower.contains(w)) {
+                            memories.push(models::Memory {
+                                id: -m.id,
+                                content: format!("[global] {}", m.content),
+                                r#type: m.r#type,
+                                created_at: m.created_at,
+                                accessed_at: m.updated_at,
+                                access_count: m.access_count,
+                                consolidated: true,
+                                importance: m.confidence,
+                                session_id: None,
+                            });
+                        }
+                    }
+                }
+            }
+
             if memories.is_empty() {
                 Ok("No memories found matching that query.".to_string())
             } else {
@@ -188,7 +226,10 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
             let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
             let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
-            context::format_context(&cons_conn, &raw_conn, compact)
+            let global_cons = global_dir.as_ref().and_then(|gd| {
+                db::open_consolidated_db(&gd.join("consolidated.db")).ok()
+            });
+            context::format_context(&cons_conn, &raw_conn, global_cons.as_ref(), compact)
         }
         "cortex_sleep" => {
             let micro = args.get("micro").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -201,17 +242,33 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
             } else {
                 let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
                 let result = sleep::quick_sleep(&raw_conn, &cons_conn, &config, cortex_dir).await?;
-                Ok(format!(
+                let mut msg = format!(
                     "Quick sleep complete. {} consolidations, {} promotions, {} decayed, {} skills updated.",
                     result.consolidations.len(), result.promotions.len(), result.decayed.len(), result.skill_updates.len()
-                ))
+                );
+                if !result.global_promotions.is_empty() {
+                    msg.push_str(&format!(" {} promoted to global.", result.global_promotions.len()));
+                }
+                Ok(msg)
             }
         }
         "cortex_stats" => {
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
             let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
             let stats = db::get_stats(&raw_conn, &cons_conn)?;
-            Ok(serde_json::to_string_pretty(&stats)?)
+            let mut stats_json = serde_json::to_value(&stats)?;
+
+            // Add global stats if available
+            if let Some(gd) = global_dir {
+                if let Ok(global_cons) = db::open_consolidated_db(&gd.join("consolidated.db")) {
+                    let gc: i64 = global_cons.query_row("SELECT COUNT(*) FROM consolidated", [], |r| r.get(0)).unwrap_or(0);
+                    let gs: i64 = global_cons.query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0)).unwrap_or(0);
+                    stats_json["global_consolidated"] = serde_json::json!(gc);
+                    stats_json["global_skills"] = serde_json::json!(gs);
+                }
+            }
+
+            Ok(serde_json::to_string_pretty(&stats_json)?)
         }
         _ => anyhow::bail!("Unknown tool: {}", name),
     }

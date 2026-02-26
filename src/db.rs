@@ -188,6 +188,21 @@ pub fn insert_consolidated(conn: &Connection, content: &str, mem_type: &str, sou
     Ok(conn.last_insert_rowid())
 }
 
+/// Check if consolidated DB already contains an entry with this exact content.
+pub fn consolidated_content_exists(conn: &Connection, content: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM consolidated WHERE content = ?1",
+        params![content],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// Count total consolidated entries.
+pub fn get_consolidated_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM consolidated", [], |row| row.get(0))?)
+}
+
 pub fn remove_consolidated(conn: &Connection, ids: &[i64]) -> Result<()> {
     for id in ids {
         conn.execute("DELETE FROM consolidated WHERE id = ?1", params![id])?;

@@ -1,8 +1,11 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
+use crate::config;
 use crate::config::Config;
 use crate::db;
+use crate::dream;
+use crate::init;
 use crate::llm;
 use crate::models::ConsolidationResult;
 use crate::skills;
@@ -76,6 +79,35 @@ pub async fn quick_sleep(
 
     apply_consolidation(raw_conn, cons_conn, &result, &unprocessed)?;
 
+    // Apply global promotions to ~/.cortex/
+    if !result.global_promotions.is_empty() {
+        match init::ensure_global_dir() {
+            Ok(global_dir) => {
+                let global_cons = db::open_consolidated_db(&global_dir.join("consolidated.db"))?;
+                let mut promoted = 0;
+                for gp in &result.global_promotions {
+                    // Skip duplicates
+                    if db::consolidated_content_exists(&global_cons, &gp.content)? {
+                        continue;
+                    }
+                    db::insert_consolidated(&global_cons, &gp.content, &gp.r#type, &[], gp.confidence)?;
+                    promoted += 1;
+                }
+                if promoted > 0 {
+                    skills::generate_skill_files(&global_cons, &global_dir.join("skills"))?;
+                    db::set_meta(&global_cons, "last_sleep", &chrono::Utc::now().to_rfc3339())?;
+                    eprintln!("Promoted {} new memories to global store.", promoted);
+                }
+
+                // Auto global dream: if 5+ entries and last dream was 7+ days ago (or never)
+                auto_global_dream(&global_dir, &global_cons).await;
+            }
+            Err(e) => {
+                eprintln!("Warning: could not write global promotions: {}", e);
+            }
+        }
+    }
+
     // Update skill files
     skills::generate_skill_files(cons_conn, &cortex_dir.join("skills"))?;
 
@@ -120,6 +152,9 @@ Output a JSON object with these fields:
 - "promotions": array of recent observation IDs that should be promoted to long-term as-is (high value, unique)
 - "decayed": array of existing long-term memory IDs that are superseded or no longer relevant
 - "skill_updates": array of {{"name": "skill-name-kebab-case", "content": "markdown content describing the learned skill/pattern"}}
+- "global_promotions": array of {{"content": "description", "type": "preference|pattern", "confidence": 0.0-1.0}}
+  Identify user-level knowledge that applies across ALL projects: personal identity (name, role),
+  tool preferences, coding style, workflow habits, language preferences. NOT project-specific patterns.
 
 Rules:
 - Merge similar observations into single consolidated patterns
@@ -127,6 +162,7 @@ Rules:
 - Promote unique high-value observations directly
 - Decay superseded long-term memories
 - Generate skill files for recurring patterns (3+ related observations)
+- Put cross-project personal preferences and identity in global_promotions, not consolidations
 - Output ONLY valid JSON, no explanation"#
     )
 }
@@ -188,6 +224,49 @@ fn extract_json(text: &str) -> &str {
     text.trim()
 }
 
+/// Auto-trigger global dream if enough entries exist and it hasn't been done recently.
+async fn auto_global_dream(global_dir: &std::path::Path, global_cons: &rusqlite::Connection) {
+    let count = db::get_consolidated_count(global_cons).unwrap_or(0);
+    if count < 5 {
+        return;
+    }
+
+    let should_dream = match db::get_meta(global_cons, "last_dream") {
+        Ok(Some(last)) => {
+            if let Ok(last_dt) = chrono::DateTime::parse_from_rfc3339(&last) {
+                let last_utc = last_dt.with_timezone(&chrono::Utc);
+                let days = chrono::Utc::now().signed_duration_since(last_utc).num_days();
+                days >= 1
+            } else {
+                true
+            }
+        }
+        _ => true, // never dreamed
+    };
+
+    if !should_dream {
+        return;
+    }
+
+    eprintln!("Auto-running global dream ({} entries, overdue)...", count);
+    let global_config = config::load_config(global_dir).unwrap_or_default();
+    let global_raw = match db::open_raw_db(&global_dir.join("raw.db")) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    match dream::dream(&global_raw, global_cons, &global_config, global_dir).await {
+        Ok(result) => {
+            eprintln!(
+                "Global dream complete. {} insights, {} skills updated.",
+                result.insights, result.skills_updated
+            );
+        }
+        Err(e) => {
+            eprintln!("Global dream failed: {}", e);
+        }
+    }
+}
+
 impl Default for ConsolidationResult {
     fn default() -> Self {
         Self {
@@ -196,6 +275,7 @@ impl Default for ConsolidationResult {
             promotions: vec![],
             decayed: vec![],
             skill_updates: vec![],
+            global_promotions: vec![],
         }
     }
 }
