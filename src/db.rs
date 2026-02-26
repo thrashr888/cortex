@@ -203,6 +203,15 @@ pub fn get_consolidated_count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM consolidated", [], |row| row.get(0))?)
 }
 
+/// Update the content of a consolidated memory by ID.
+pub fn update_consolidated(conn: &Connection, id: i64, content: &str) -> Result<bool> {
+    let updated = conn.execute(
+        "UPDATE consolidated SET content = ?1, updated_at = datetime('now') WHERE id = ?2",
+        params![content, id],
+    )?;
+    Ok(updated > 0)
+}
+
 pub fn remove_consolidated(conn: &Connection, ids: &[i64]) -> Result<()> {
     for id in ids {
         conn.execute("DELETE FROM consolidated WHERE id = ?1", params![id])?;

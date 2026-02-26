@@ -75,6 +75,18 @@ enum Commands {
         #[arg(long, short)]
         global: bool,
     },
+    /// Edit a consolidated memory by ID
+    Edit {
+        /// Consolidated memory ID to edit (use negative IDs for global memories)
+        id: i64,
+        /// New content for the memory
+        content: String,
+    },
+    /// Delete a consolidated memory by ID
+    Delete {
+        /// Consolidated memory ID to delete (use negative IDs for global memories)
+        id: i64,
+    },
     /// Session start: catch-up consolidation and context injection
     Wake,
     /// Output memory context for prompt injection
@@ -304,6 +316,43 @@ async fn main() -> Result<()> {
                     "Dream complete. {} insights generated, {} skills updated.",
                     result.insights, result.skills_updated
                 );
+            }
+        }
+        Commands::Edit { id, content } => {
+            if id < 0 {
+                // Global memory (negative IDs map to positive global IDs)
+                let global_dir = init::find_global_dir()
+                    .ok_or_else(|| anyhow::anyhow!("No global ~/.cortex/ directory found."))?;
+                let global_cons = db::open_consolidated_db(&global_dir.join("consolidated.db"))?;
+                let real_id = -id;
+                if db::update_consolidated(&global_cons, real_id, &content)? {
+                    eprintln!("Updated global memory #{}", real_id);
+                } else {
+                    eprintln!("Global memory #{} not found.", real_id);
+                }
+            } else {
+                let cortex_dir = find_cortex_dir(&cli.dir)?;
+                let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
+                if db::update_consolidated(&cons_conn, id, &content)? {
+                    eprintln!("Updated consolidated memory #{}", id);
+                } else {
+                    eprintln!("Consolidated memory #{} not found.", id);
+                }
+            }
+        }
+        Commands::Delete { id } => {
+            if id < 0 {
+                let global_dir = init::find_global_dir()
+                    .ok_or_else(|| anyhow::anyhow!("No global ~/.cortex/ directory found."))?;
+                let global_cons = db::open_consolidated_db(&global_dir.join("consolidated.db"))?;
+                let real_id = -id;
+                db::remove_consolidated(&global_cons, &[real_id])?;
+                eprintln!("Deleted global memory #{}", real_id);
+            } else {
+                let cortex_dir = find_cortex_dir(&cli.dir)?;
+                let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
+                db::remove_consolidated(&cons_conn, &[id])?;
+                eprintln!("Deleted consolidated memory #{}", id);
             }
         }
         Commands::Wake => {
