@@ -23,7 +23,7 @@ fn default_consolidation() -> ConsolidationConfig {
 }
 fn default_threshold() -> u32 { 10 }
 fn default_decay() -> f64 { 0.1 }
-fn default_model() -> String { "claude-haiku-4-5-20241022".to_string() }
+fn default_model() -> String { "claude-haiku-4-5".to_string() }
 
 impl Default for ConsolidationConfig {
     fn default() -> Self {

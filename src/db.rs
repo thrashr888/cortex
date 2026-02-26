@@ -19,7 +19,7 @@ pub fn open_raw_db(path: &Path) -> Result<Connection> {
             importance REAL NOT NULL DEFAULT 0.5,
             session_id TEXT
         );
-        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, type, content=memories, content_rowid=id);
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, type, content=memories, content_rowid=id, tokenize='porter unicode61');
         CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
             INSERT INTO memories_fts(rowid, content, type) VALUES (new.id, new.content, new.type);
         END;
@@ -72,6 +72,21 @@ pub fn save_memory(conn: &Connection, content: &str, mem_type: &str, session_id:
 }
 
 pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Memory>> {
+    // Preprocess query: add prefix matching (*) to each term for fuzzy matching
+    let fts_query = query
+        .split_whitespace()
+        .map(|word| {
+            let clean: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+            if clean.is_empty() { String::new() } else { format!("{}*", clean) }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" OR ");
+
+    if fts_query.is_empty() {
+        return Ok(vec![]);
+    }
+
     let mut stmt = conn.prepare(
         "SELECT m.id, m.content, m.type, m.created_at, m.accessed_at,
                 m.access_count, m.consolidated, m.importance, m.session_id
@@ -81,7 +96,7 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
          ORDER BY f.rank * (1.0 / (1.0 + (julianday('now') - julianday(m.accessed_at))))
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![query, limit as i64], |row| {
+    let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
         Ok(Memory {
             id: row.get(0)?,
             content: row.get(1)?,
