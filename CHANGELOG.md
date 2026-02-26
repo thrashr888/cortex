@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1] - 2026-02-26
+
+### Added
+- `cortex edit <id> <content>` — update a consolidated memory's content by ID.
+- `cortex delete <id>` — remove a consolidated memory by ID.
+- Negative IDs target global memories (e.g., `cortex edit -- -1 "new content"`).
+
 ## [0.2.0] - 2026-02-26
 
 ### Added

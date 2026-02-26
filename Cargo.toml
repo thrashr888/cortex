@@ -1,6 +1,6 @@
 [package]
 name = "cortex"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Repo-local cognitive memory for AI agents"
 license = "MIT"
