@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0] - 2026-02-28
+
+### Added
+- **Relevance-based memory loading**: Prevent context bloat with query-aware memory retrieval using FTS5 search.
+- `--query` and `--limit` flags on `cortex context` CLI command for targeted memory loading.
+- `query` and `limit` parameters on `cortex_context` MCP tool (default limit: 15).
+- `search_consolidated()` function with BM25 + confidence scoring for semantic search.
+- FTS5 index and triggers on consolidated table for automatic search index maintenance.
+- Four new skill documentation files from dream consolidation:
+  - `cortex-memory-system-architecture.md`: Two-tier DB architecture and optimization patterns
+  - `fts5-memory-relevance-retrieval.md`: Query-aware loading implementation guide
+  - `rust-sqlite-patterns.md`: Rusqlite lifetime management and FTS5 patterns
+  - `aws-bedrock-integration-guide.md`: Doormat authentication and cross-region inference profiles
+
+### Changed
+- `format_context()` now conditionally loads memories by relevance (with query) or recency (without query).
+- Default memory limit reduced from 20 to 15 for more efficient context usage.
+- Global memories use half the limit (limit/2) to prioritize project-specific context.
+
 ## [0.2.1] - 2026-02-26
 
 ### Added
