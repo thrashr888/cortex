@@ -94,6 +94,12 @@ enum Commands {
         /// Compact single-line format
         #[arg(long)]
         compact: bool,
+        /// Optional search query to load only relevant memories
+        #[arg(short, long)]
+        query: Option<String>,
+        /// Max number of relevant memories to include (default: 15)
+        #[arg(short, long, default_value = "15")]
+        limit: usize,
     },
     /// Start MCP stdio server
     Mcp,
@@ -364,12 +370,19 @@ async fn main() -> Result<()> {
             let ctx = wake::wake(&raw_conn, &cons_conn, &config, &cortex_dir, global_cons.as_ref()).await?;
             println!("{}", ctx);
         }
-        Commands::Context { compact } => {
+        Commands::Context { compact, query, limit } => {
             let cortex_dir = find_cortex_dir(&cli.dir)?;
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
             let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
             let global_cons = open_global_cons();
-            let ctx = context::format_context(&cons_conn, &raw_conn, global_cons.as_ref(), compact)?;
+            let ctx = context::format_context(
+                &cons_conn,
+                &raw_conn,
+                global_cons.as_ref(),
+                compact,
+                query.as_deref(),
+                limit,
+            )?;
             println!("{}", ctx);
         }
         Commands::Mcp => {

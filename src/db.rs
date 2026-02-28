@@ -48,6 +48,17 @@ pub fn open_consolidated_db(path: &Path) -> Result<Connection> {
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             access_count INTEGER NOT NULL DEFAULT 0
         );
+        CREATE VIRTUAL TABLE IF NOT EXISTS consolidated_fts USING fts5(content, type, content=consolidated, content_rowid=id, tokenize='porter unicode61');
+        CREATE TRIGGER IF NOT EXISTS consolidated_ai AFTER INSERT ON consolidated BEGIN
+            INSERT INTO consolidated_fts(rowid, content, type) VALUES (new.id, new.content, new.type);
+        END;
+        CREATE TRIGGER IF NOT EXISTS consolidated_ad AFTER DELETE ON consolidated BEGIN
+            INSERT INTO consolidated_fts(consolidated_fts, rowid, content, type) VALUES('delete', old.id, old.content, old.type);
+        END;
+        CREATE TRIGGER IF NOT EXISTS consolidated_au AFTER UPDATE ON consolidated BEGIN
+            INSERT INTO consolidated_fts(consolidated_fts, rowid, content, type) VALUES('delete', old.id, old.content, old.type);
+            INSERT INTO consolidated_fts(rowid, content, type) VALUES (new.id, new.content, new.type);
+        END;
         CREATE TABLE IF NOT EXISTS skills (
             id INTEGER PRIMARY KEY,
             name TEXT UNIQUE NOT NULL,
@@ -163,6 +174,48 @@ pub fn get_all_consolidated(conn: &Connection) -> Result<Vec<ConsolidatedMemory>
          FROM consolidated ORDER BY updated_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
+        let source_ids_str: String = row.get(3)?;
+        let source_ids: Vec<i64> = serde_json::from_str(&source_ids_str).unwrap_or_default();
+        Ok(ConsolidatedMemory {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            r#type: row.get(2)?,
+            source_ids,
+            confidence: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            access_count: row.get(7)?,
+        })
+    })?;
+    rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+/// Search consolidated memories using FTS5, returning the most relevant results.
+pub fn search_consolidated(conn: &Connection, query: &str, limit: usize) -> Result<Vec<ConsolidatedMemory>> {
+    // Preprocess query: add prefix matching (*) to each term for fuzzy matching
+    let fts_query = query
+        .split_whitespace()
+        .map(|word| {
+            let clean: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+            if clean.is_empty() { String::new() } else { format!("{}*", clean) }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" OR ");
+
+    if fts_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.content, c.type, c.source_ids, c.confidence, c.created_at, c.updated_at, c.access_count
+         FROM consolidated_fts f
+         JOIN consolidated c ON f.rowid = c.id
+         WHERE consolidated_fts MATCH ?1
+         ORDER BY f.rank * c.confidence * (1.0 / (1.0 + (julianday('now') - julianday(c.updated_at)) / 30.0))
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
         let source_ids_str: String = row.get(3)?;
         let source_ids: Vec<i64> = serde_json::from_str(&source_ids_str).unwrap_or_default();
         Ok(ConsolidatedMemory {

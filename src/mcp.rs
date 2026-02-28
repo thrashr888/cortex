@@ -127,7 +127,9 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "compact": { "type": "boolean", "description": "Return compact single-line format", "default": false }
+                            "compact": { "type": "boolean", "description": "Return compact single-line format", "default": false },
+                            "query": { "type": "string", "description": "Optional search query to load only relevant memories. If omitted, loads all memories." },
+                            "limit": { "type": "integer", "description": "Max number of relevant memories to include (default: 15)", "default": 15 }
                         }
                     }
                 },
@@ -224,12 +226,14 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
         }
         "cortex_context" => {
             let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+            let query = args.get("query").and_then(|v| v.as_str());
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(15) as usize;
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
             let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
             let global_cons = global_dir.as_ref().and_then(|gd| {
                 db::open_consolidated_db(&gd.join("consolidated.db")).ok()
             });
-            context::format_context(&cons_conn, &raw_conn, global_cons.as_ref(), compact)
+            context::format_context(&cons_conn, &raw_conn, global_cons.as_ref(), compact, query, limit)
         }
         "cortex_sleep" => {
             let micro = args.get("micro").and_then(|v| v.as_bool()).unwrap_or(false);

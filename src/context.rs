@@ -9,13 +9,33 @@ pub fn format_context(
     raw_conn: &Connection,
     global_cons_conn: Option<&Connection>,
     compact: bool,
+    query: Option<&str>,
+    limit: usize,
 ) -> Result<String> {
-    let consolidated = db::get_all_consolidated(cons_conn)?;
+    // Load memories - either search-based (relevant) or all
+    let consolidated = match query {
+        Some(q) if !q.trim().is_empty() => db::search_consolidated(cons_conn, q, limit)?,
+        _ => {
+            // No query: load top N by recency
+            let all = db::get_all_consolidated(cons_conn)?;
+            all.into_iter().take(limit).collect()
+        }
+    };
+
     let skills = db::get_all_skills(cons_conn)?;
     let stats = db::get_stats(raw_conn, cons_conn)?;
 
+    // Also apply query filter to global memories
     let global_consolidated = match global_cons_conn {
-        Some(gc) => db::get_all_consolidated(gc).unwrap_or_default(),
+        Some(gc) => {
+            match query {
+                Some(q) if !q.trim().is_empty() => db::search_consolidated(gc, q, limit / 2).unwrap_or_default(),
+                _ => {
+                    let all = db::get_all_consolidated(gc).unwrap_or_default();
+                    all.into_iter().take(limit / 3).collect()
+                }
+            }
+        }
         None => vec![],
     };
     let global_skills = match global_cons_conn {
@@ -41,7 +61,7 @@ fn format_full(
 
     if !consolidated.is_empty() {
         out.push_str("### Learned Patterns\n");
-        for m in consolidated.iter().take(20) {
+        for m in consolidated {
             out.push_str(&format!(
                 "- [{}] {} (confidence: {:.2})\n",
                 m.r#type, m.content, m.confidence
@@ -61,7 +81,7 @@ fn format_full(
 
     if !global_consolidated.is_empty() {
         out.push_str("### Global Knowledge\n");
-        for m in global_consolidated.iter().take(20) {
+        for m in global_consolidated {
             out.push_str(&format!(
                 "- [{}] {} (confidence: {:.2})\n",
                 m.r#type, m.content, m.confidence
@@ -101,13 +121,11 @@ fn format_compact(
 ) -> String {
     let patterns: Vec<String> = consolidated
         .iter()
-        .take(10)
         .map(|m| m.content.clone())
         .collect();
 
     let global_patterns: Vec<String> = global_consolidated
         .iter()
-        .take(5)
         .map(|m| m.content.clone())
         .collect();
 
