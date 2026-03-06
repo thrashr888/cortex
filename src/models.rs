@@ -11,6 +11,60 @@ pub struct Memory {
     pub consolidated: bool,
     pub importance: f64,
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub entity_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entity {
+    pub id: i64,
+    pub name: String,
+    pub entity_type: String,
+    pub description: Option<String>,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub access_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Relationship {
+    pub id: i64,
+    pub source_entity_id: i64,
+    pub target_entity_id: i64,
+    pub relation_type: String,
+    pub weight: f64,
+    pub evidence_ids: Vec<i64>,
+    pub confidence: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedEntity {
+    pub name: String,
+    pub r#type: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedRelationship {
+    pub source: String,
+    pub target: String,
+    pub r#type: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
+}
+
+fn default_confidence() -> f64 { 0.5 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionResult {
+    #[serde(default)]
+    pub entities: Vec<ExtractedEntity>,
+    #[serde(default)]
+    pub relationships: Vec<ExtractedRelationship>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +94,8 @@ pub struct Stats {
     pub unconsolidated_count: i64,
     pub consolidated_count: i64,
     pub skill_count: i64,
+    pub entity_count: i64,
+    pub relationship_count: i64,
     pub last_sleep: Option<String>,
 }
 
@@ -85,12 +141,28 @@ pub struct ConsolidationResult {
     pub skill_updates: Vec<SkillUpdate>,
     #[serde(default)]
     pub global_promotions: Vec<GlobalPromotion>,
+    #[serde(default)]
+    pub new_entities: Vec<ExtractedEntity>,
+    #[serde(default)]
+    pub new_relationships: Vec<ExtractedRelationship>,
+    #[serde(default)]
+    pub entity_updates: Vec<EntityUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityUpdate {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
 }
 
 impl std::fmt::Display for Stats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Memories: {} total ({} unconsolidated)", self.raw_count, self.unconsolidated_count)?;
         writeln!(f, "Consolidated: {}", self.consolidated_count)?;
+        writeln!(f, "Entities: {} ({} relationships)", self.entity_count, self.relationship_count)?;
         writeln!(f, "Skills: {}", self.skill_count)?;
         if let Some(ref last) = self.last_sleep {
             write!(f, "Last sleep: {}", last)?;

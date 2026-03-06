@@ -8,6 +8,7 @@ use crate::config;
 use crate::context;
 use crate::db;
 use crate::init;
+use crate::llm;
 use crate::models;
 use crate::sleep;
 
@@ -98,7 +99,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
             "tools": [
                 {
                     "name": "cortex_save",
-                    "description": "Save a learning, decision, or pattern to project memory. Use global=true for cross-project knowledge like personal preferences.",
+                    "description": "Save a learning, decision, or pattern to project memory. Automatically extracts entities and relationships. Use global=true for cross-project knowledge like personal preferences.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -111,7 +112,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                 },
                 {
                     "name": "cortex_recall",
-                    "description": "Search memory for relevant learnings. Searches both project and global memory automatically.",
+                    "description": "Search memory for relevant learnings. Searches both project and global memory automatically. Supports entity-based graph search.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -123,7 +124,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                 },
                 {
                     "name": "cortex_context",
-                    "description": "Get current memory context for injection into agent prompts. Includes both project and global knowledge.",
+                    "description": "Get current memory context for injection into agent prompts. Includes entities, relationships, and both project and global knowledge.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -135,7 +136,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                 },
                 {
                     "name": "cortex_sleep",
-                    "description": "Run memory consolidation. Automatically promotes cross-project patterns to global memory.",
+                    "description": "Run memory consolidation. Automatically discovers entities and relationships, and promotes cross-project patterns to global memory.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -145,7 +146,7 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                 },
                 {
                     "name": "cortex_stats",
-                    "description": "Get memory health statistics including global memory counts",
+                    "description": "Get memory health statistics including entity counts, relationship counts, and global memory counts",
                     "inputSchema": { "type": "object", "properties": {} }
                 }
             ]
@@ -179,19 +180,52 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
                 let config = config::load_config(cortex_dir)?;
                 let id = db::save_memory(&raw_conn, content, mem_type, session_id)?;
 
+                // Try to extract entities (best-effort)
+                let entity_msg = match llm::extract_entities(content, &config).await {
+                    Ok(extraction) => {
+                        let mut entity_ids = Vec::new();
+                        for entity in &extraction.entities {
+                            if let Ok(eid) = db::upsert_entity(&raw_conn, &entity.name, &entity.r#type, entity.description.as_deref()) {
+                                entity_ids.push(eid);
+                            }
+                        }
+                        if !entity_ids.is_empty() {
+                            let _ = db::update_memory_entities(&raw_conn, id, &entity_ids);
+                        }
+                        for rel in &extraction.relationships {
+                            let source = db::get_entity_by_name(&raw_conn, &rel.source).ok().flatten();
+                            let target = db::get_entity_by_name(&raw_conn, &rel.target).ok().flatten();
+                            if let (Some(s), Some(t)) = (source, target) {
+                                let _ = db::upsert_relationship(&raw_conn, s.id, t.id, &rel.r#type, id, rel.confidence);
+                            }
+                        }
+                        if extraction.entities.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", {} entities extracted", extraction.entities.len())
+                        }
+                    }
+                    Err(_) => String::new(),
+                };
+
                 let uncons = db::get_unconsolidated_count(&raw_conn)?;
                 if uncons >= config.consolidation.auto_micro_threshold as i64 {
                     let _ = sleep::micro_sleep(&raw_conn, &config);
                 }
 
-                Ok(format!("Saved memory #{} (type: {})", id, mem_type))
+                Ok(format!("Saved memory #{} (type: {}{})", id, mem_type, entity_msg))
             }
         }
         "cortex_recall" => {
             let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
-            let mut memories = db::recall_memories(&raw_conn, query, limit)?;
+
+            // Try entity-based recall first, then fall back to FTS
+            let mut memories = db::recall_by_entity(&raw_conn, query, true, limit)?;
+            if memories.is_empty() {
+                memories = db::recall_memories(&raw_conn, query, limit)?;
+            }
 
             // Also search global consolidated DB
             if let Some(gd) = global_dir {
@@ -212,6 +246,7 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
                                 consolidated: true,
                                 importance: m.confidence,
                                 session_id: None,
+                                entity_ids: vec![],
                             });
                         }
                     }
@@ -250,6 +285,12 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
                     "Quick sleep complete. {} consolidations, {} promotions, {} decayed, {} skills updated.",
                     result.consolidations.len(), result.promotions.len(), result.decayed.len(), result.skill_updates.len()
                 );
+                if !result.new_entities.is_empty() {
+                    msg.push_str(&format!(" {} new entities.", result.new_entities.len()));
+                }
+                if !result.new_relationships.is_empty() {
+                    msg.push_str(&format!(" {} new relationships.", result.new_relationships.len()));
+                }
                 if !result.global_promotions.is_empty() {
                     msg.push_str(&format!(" {} promoted to global.", result.global_promotions.len()));
                 }

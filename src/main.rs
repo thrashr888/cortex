@@ -146,7 +146,36 @@ async fn main() -> Result<()> {
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
             let sid = session_id();
             let id = db::save_memory(&raw_conn, &content, &r#type, &sid)?;
-            eprintln!("Saved memory #{} (type: {})", id, r#type);
+
+            // Try to extract entities (best-effort, don't fail save if extraction fails)
+            match llm::extract_entities(&content, &config).await {
+                Ok(extraction) => {
+                    let mut entity_ids = Vec::new();
+                    for entity in &extraction.entities {
+                        if let Ok(eid) = db::upsert_entity(&raw_conn, &entity.name, &entity.r#type, entity.description.as_deref()) {
+                            entity_ids.push(eid);
+                        }
+                    }
+                    if !entity_ids.is_empty() {
+                        let _ = db::update_memory_entities(&raw_conn, id, &entity_ids);
+                    }
+                    for rel in &extraction.relationships {
+                        let source = db::get_entity_by_name(&raw_conn, &rel.source).ok().flatten();
+                        let target = db::get_entity_by_name(&raw_conn, &rel.target).ok().flatten();
+                        if let (Some(s), Some(t)) = (source, target) {
+                            let _ = db::upsert_relationship(&raw_conn, s.id, t.id, &rel.r#type, id, rel.confidence);
+                        }
+                    }
+                    if !extraction.entities.is_empty() {
+                        eprintln!("Saved memory #{} (type: {}, {} entities extracted)", id, r#type, extraction.entities.len());
+                    } else {
+                        eprintln!("Saved memory #{} (type: {})", id, r#type);
+                    }
+                }
+                Err(_) => {
+                    eprintln!("Saved memory #{} (type: {})", id, r#type);
+                }
+            }
 
             // Auto micro-sleep
             let uncons = db::get_unconsolidated_count(&raw_conn)?;
@@ -160,7 +189,12 @@ async fn main() -> Result<()> {
         Commands::Recall { query, limit, json } => {
             let cortex_dir = find_cortex_dir(&cli.dir)?;
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
-            let mut memories = db::recall_memories(&raw_conn, &query, limit)?;
+
+            // Try entity-based recall first, then fall back to FTS
+            let mut memories = db::recall_by_entity(&raw_conn, &query, true, limit)?;
+            if memories.is_empty() {
+                memories = db::recall_memories(&raw_conn, &query, limit)?;
+            }
 
             // Also search global consolidated DB
             if let Some(global_cons) = open_global_cons() {
@@ -180,6 +214,7 @@ async fn main() -> Result<()> {
                             consolidated: true,
                             importance: m.confidence,
                             session_id: None,
+                            entity_ids: vec![],
                         });
                     }
                 }

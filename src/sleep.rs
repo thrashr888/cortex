@@ -67,7 +67,9 @@ pub async fn quick_sleep(
     }
 
     let existing = db::get_all_consolidated(cons_conn)?;
-    let prompt = build_consolidation_prompt(&unprocessed, &existing);
+    let entities = db::get_all_entities(raw_conn)?;
+    let relationships = db::get_all_relationships(raw_conn)?;
+    let prompt = build_consolidation_prompt(&unprocessed, &existing, &entities, &relationships);
 
     let system = "You are a memory consolidation system. Analyze observations and output ONLY valid JSON.";
     let response = llm::call_anthropic(&prompt, system, config).await?;
@@ -120,11 +122,13 @@ pub async fn quick_sleep(
 fn build_consolidation_prompt(
     unprocessed: &[crate::models::Memory],
     existing: &[crate::models::ConsolidatedMemory],
+    entities: &[crate::models::Entity],
+    relationships: &[crate::models::Relationship],
 ) -> String {
     let recent_json = serde_json::to_string_pretty(
         &unprocessed
             .iter()
-            .map(|m| serde_json::json!({"id": m.id, "content": m.content, "type": m.r#type, "created_at": m.created_at}))
+            .map(|m| serde_json::json!({"id": m.id, "content": m.content, "type": m.r#type, "created_at": m.created_at, "entity_ids": m.entity_ids}))
             .collect::<Vec<_>>(),
     )
     .unwrap_or_default();
@@ -137,14 +141,51 @@ fn build_consolidation_prompt(
     )
     .unwrap_or_default();
 
+    let entities_json = if entities.is_empty() {
+        "[]".to_string()
+    } else {
+        serde_json::to_string_pretty(
+            &entities
+                .iter()
+                .map(|e| serde_json::json!({"id": e.id, "name": e.name, "type": e.entity_type, "description": e.description, "confidence": e.confidence}))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default()
+    };
+
+    let relationships_json = if relationships.is_empty() {
+        "[]".to_string()
+    } else {
+        // Build entity name lookup for readable output
+        let entity_names: std::collections::HashMap<i64, &str> = entities.iter().map(|e| (e.id, e.name.as_str())).collect();
+        serde_json::to_string_pretty(
+            &relationships
+                .iter()
+                .map(|r| serde_json::json!({
+                    "source": entity_names.get(&r.source_entity_id).unwrap_or(&"?"),
+                    "target": entity_names.get(&r.target_entity_id).unwrap_or(&"?"),
+                    "type": r.relation_type,
+                    "weight": r.weight
+                }))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default()
+    };
+
     format!(
-        r#"Given these recent observations and existing long-term memories, consolidate them.
+        r#"Given these recent observations, existing long-term memories, and the current knowledge graph, consolidate them.
 
 Recent observations (unprocessed):
 {recent_json}
 
 Existing long-term memories:
 {existing_json}
+
+Current Entities:
+{entities_json}
+
+Current Relationships:
+{relationships_json}
 
 Output a JSON object with these fields:
 - "consolidations": array of {{"content": "merged abstract pattern", "type": "pattern|bugfix|decision|preference", "source_ids": [list of recent observation ids merged], "confidence": 0.0-1.0}}
@@ -155,6 +196,12 @@ Output a JSON object with these fields:
 - "global_promotions": array of {{"content": "description", "type": "preference|pattern", "confidence": 0.0-1.0}}
   Identify user-level knowledge that applies across ALL projects: personal identity (name, role),
   tool preferences, coding style, workflow habits, language preferences. NOT project-specific patterns.
+- "new_entities": array of {{"name": "EntityName", "type": "language|technology|service|pattern|concept|tool|framework", "description": "Short description"}}
+  New entities discovered in the observations that aren't in the current graph.
+- "new_relationships": array of {{"source": "entity_name", "target": "entity_name", "type": "uses|implements|related_to|alternative_to|caused_by|used_for", "confidence": 0.0-1.0}}
+  New relationships between entities (existing or newly created).
+- "entity_updates": array of {{"name": "entity_name", "description": "updated description", "confidence": 0.0-1.0}}
+  Updates to existing entity descriptions or confidence scores.
 
 Rules:
 - Merge similar observations into single consolidated patterns
@@ -163,6 +210,8 @@ Rules:
 - Decay superseded long-term memories
 - Generate skill files for recurring patterns (3+ related observations)
 - Put cross-project personal preferences and identity in global_promotions, not consolidations
+- Discover new entities and relationships from the observations
+- Use canonical entity names (e.g., "Rust" not "rust lang")
 - Output ONLY valid JSON, no explanation"#
     )
 }
@@ -173,6 +222,26 @@ fn apply_consolidation(
     result: &ConsolidationResult,
     unprocessed: &[crate::models::Memory],
 ) -> Result<()> {
+    // Apply new entities from consolidation
+    for entity in &result.new_entities {
+        db::upsert_entity(raw_conn, &entity.name, &entity.r#type, entity.description.as_deref())?;
+    }
+
+    // Apply new relationships from consolidation
+    for rel in &result.new_relationships {
+        let source = db::get_entity_by_name(raw_conn, &rel.source)?;
+        let target = db::get_entity_by_name(raw_conn, &rel.target)?;
+        if let (Some(s), Some(t)) = (source, target) {
+            // Use 0 as evidence_id for consolidation-discovered relationships
+            db::upsert_relationship(raw_conn, s.id, t.id, &rel.r#type, 0, rel.confidence)?;
+        }
+    }
+
+    // Apply entity updates
+    for update in &result.entity_updates {
+        db::update_entity(raw_conn, &update.name, update.description.as_deref(), update.confidence)?;
+    }
+
     // Apply consolidations
     for c in &result.consolidations {
         db::insert_consolidated(cons_conn, &c.content, &c.r#type, &c.source_ids, c.confidence)?;
@@ -276,6 +345,9 @@ impl Default for ConsolidationResult {
             decayed: vec![],
             skill_updates: vec![],
             global_promotions: vec![],
+            new_entities: vec![],
+            new_relationships: vec![],
+            entity_updates: vec![],
         }
     }
 }

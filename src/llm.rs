@@ -35,6 +35,64 @@ struct ContentBlock {
     text: Option<String>,
 }
 
+/// Extract entities and relationships from a memory content string.
+pub async fn extract_entities(content: &str, config: &Config) -> Result<crate::models::ExtractionResult> {
+    let prompt = format!(
+        r#"Extract entities and relationships from this memory:
+
+Memory: "{content}"
+
+Output JSON:
+{{
+  "entities": [
+    {{"name": "EntityName", "type": "language|technology|service|pattern|concept|tool|framework", "description": "Short description"}}
+  ],
+  "relationships": [
+    {{"source": "EntityA", "target": "EntityB", "type": "uses|implements|related_to|alternative_to|caused_by|used_for", "confidence": 0.0-1.0}}
+  ]
+}}
+
+Rules:
+- Extract concrete entities (technologies, languages, services, concepts, tools)
+- Use canonical names (e.g., "Rust" not "rust lang", "SQLite" not "sqlite")
+- Only extract entities that are clearly mentioned
+- If no clear entities, return empty arrays
+- Output ONLY valid JSON"#
+    );
+
+    let system = "You are an entity extraction system. Extract structured entities and relationships from text. Output ONLY valid JSON.";
+    let response = call_anthropic(&prompt, system, config).await?;
+
+    let json_str = extract_json_from_response(&response);
+    let result: crate::models::ExtractionResult = serde_json::from_str(json_str)
+        .unwrap_or_else(|_| crate::models::ExtractionResult {
+            entities: vec![],
+            relationships: vec![],
+        });
+    Ok(result)
+}
+
+fn extract_json_from_response(text: &str) -> &str {
+    if let Some(start) = text.find("```json") {
+        let content = &text[start + 7..];
+        if let Some(end) = content.rfind("```") {
+            return content[..end].trim();
+        }
+    }
+    if let Some(start) = text.find("```") {
+        let content = &text[start + 3..];
+        if let Some(end) = content.rfind("```") {
+            return content[..end].trim();
+        }
+    }
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text.rfind('}') {
+            return text[start..=end].trim();
+        }
+    }
+    text.trim()
+}
+
 pub async fn call_anthropic(prompt: &str, system: &str, config: &Config) -> Result<String> {
     // Check if we have a direct API key (non-empty)
     let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();

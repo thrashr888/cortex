@@ -2,11 +2,11 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
-use crate::models::{ConsolidatedMemory, Memory, Skill, Stats};
+use crate::models::{ConsolidatedMemory, Entity, Memory, Relationship, Skill, Stats};
 
 pub fn open_raw_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY,
@@ -17,7 +17,8 @@ pub fn open_raw_db(path: &Path) -> Result<Connection> {
             access_count INTEGER NOT NULL DEFAULT 0,
             consolidated INTEGER NOT NULL DEFAULT 0,
             importance REAL NOT NULL DEFAULT 0.5,
-            session_id TEXT
+            session_id TEXT,
+            entity_ids TEXT NOT NULL DEFAULT '[]'
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, type, content=memories, content_rowid=id, tokenize='porter unicode61');
         CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -31,6 +32,62 @@ pub fn open_raw_db(path: &Path) -> Result<Connection> {
             INSERT INTO memories_fts(rowid, content, type) VALUES (new.id, new.content, new.type);
         END;",
     )?;
+
+    // Migrate: add entity_ids column if missing
+    let has_entity_ids = conn
+        .prepare("SELECT entity_ids FROM memories LIMIT 0")
+        .is_ok();
+    if !has_entity_ids {
+        conn.execute_batch("ALTER TABLE memories ADD COLUMN entity_ids TEXT NOT NULL DEFAULT '[]';")?;
+    }
+
+    // Create entities table
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS entities (
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            entity_type TEXT NOT NULL,
+            description TEXT,
+            confidence REAL DEFAULT 0.5,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            access_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
+            name, description, content=entities, content_rowid=id, tokenize='porter unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS entities_ai AFTER INSERT ON entities BEGIN
+            INSERT INTO entities_fts(rowid, name, description) VALUES (new.id, new.name, new.description);
+        END;
+        CREATE TRIGGER IF NOT EXISTS entities_ad AFTER DELETE ON entities BEGIN
+            INSERT INTO entities_fts(entities_fts, rowid, name, description) VALUES('delete', old.id, old.name, old.description);
+        END;
+        CREATE TRIGGER IF NOT EXISTS entities_au AFTER UPDATE ON entities BEGIN
+            INSERT INTO entities_fts(entities_fts, rowid, name, description) VALUES('delete', old.id, old.name, old.description);
+            INSERT INTO entities_fts(rowid, name, description) VALUES (new.id, new.name, new.description);
+        END;",
+    )?;
+
+    // Create relationships table
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS relationships (
+            id INTEGER PRIMARY KEY,
+            source_entity_id INTEGER NOT NULL,
+            target_entity_id INTEGER NOT NULL,
+            relation_type TEXT NOT NULL,
+            weight REAL DEFAULT 1.0,
+            evidence_ids TEXT NOT NULL DEFAULT '[]',
+            confidence REAL DEFAULT 0.5,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (source_entity_id) REFERENCES entities(id),
+            FOREIGN KEY (target_entity_id) REFERENCES entities(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_entity_id);
+        CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_entity_id);
+        CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships(relation_type);",
+    )?;
+
     Ok(conn)
 }
 
@@ -46,7 +103,8 @@ pub fn open_consolidated_db(path: &Path) -> Result<Connection> {
             confidence REAL NOT NULL DEFAULT 0.5,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            access_count INTEGER NOT NULL DEFAULT 0
+            access_count INTEGER NOT NULL DEFAULT 0,
+            entity_ids TEXT NOT NULL DEFAULT '[]'
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS consolidated_fts USING fts5(content, type, content=consolidated, content_rowid=id, tokenize='porter unicode61');
         CREATE TRIGGER IF NOT EXISTS consolidated_ai AFTER INSERT ON consolidated BEGIN
@@ -71,8 +129,19 @@ pub fn open_consolidated_db(path: &Path) -> Result<Connection> {
             value TEXT NOT NULL
         );",
     )?;
+
+    // Migrate: add entity_ids column if missing
+    let has_entity_ids = conn
+        .prepare("SELECT entity_ids FROM consolidated LIMIT 0")
+        .is_ok();
+    if !has_entity_ids {
+        conn.execute_batch("ALTER TABLE consolidated ADD COLUMN entity_ids TEXT NOT NULL DEFAULT '[]';")?;
+    }
+
     Ok(conn)
 }
+
+// --- Memory CRUD ---
 
 pub fn save_memory(conn: &Connection, content: &str, mem_type: &str, session_id: &str) -> Result<i64> {
     conn.execute(
@@ -82,25 +151,39 @@ pub fn save_memory(conn: &Connection, content: &str, mem_type: &str, session_id:
     Ok(conn.last_insert_rowid())
 }
 
-pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Memory>> {
-    // Preprocess query: add prefix matching (*) to each term for fuzzy matching
-    let fts_query = query
-        .split_whitespace()
-        .map(|word| {
-            let clean: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
-            if clean.is_empty() { String::new() } else { format!("{}*", clean) }
-        })
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" OR ");
+pub fn save_memory_with_entities(
+    conn: &Connection,
+    content: &str,
+    mem_type: &str,
+    session_id: &str,
+    entity_ids: &[i64],
+) -> Result<i64> {
+    let entity_json = serde_json::to_string(entity_ids)?;
+    conn.execute(
+        "INSERT INTO memories (content, type, session_id, entity_ids) VALUES (?1, ?2, ?3, ?4)",
+        params![content, mem_type, session_id, entity_json],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
 
+pub fn update_memory_entities(conn: &Connection, id: i64, entity_ids: &[i64]) -> Result<()> {
+    let entity_json = serde_json::to_string(entity_ids)?;
+    conn.execute(
+        "UPDATE memories SET entity_ids = ?1 WHERE id = ?2",
+        params![entity_json, id],
+    )?;
+    Ok(())
+}
+
+pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Memory>> {
+    let fts_query = build_fts_query(query);
     if fts_query.is_empty() {
         return Ok(vec![]);
     }
 
     let mut stmt = conn.prepare(
         "SELECT m.id, m.content, m.type, m.created_at, m.accessed_at,
-                m.access_count, m.consolidated, m.importance, m.session_id
+                m.access_count, m.consolidated, m.importance, m.session_id, m.entity_ids
          FROM memories_fts f
          JOIN memories m ON f.rowid = m.id
          WHERE memories_fts MATCH ?1
@@ -108,6 +191,8 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
          LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+        let entity_ids_str: String = row.get(9)?;
+        let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
         Ok(Memory {
             id: row.get(0)?,
             content: row.get(1)?,
@@ -118,6 +203,7 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
             consolidated: row.get::<_, i64>(6)? != 0,
             importance: row.get(7)?,
             session_id: row.get(8)?,
+            entity_ids,
         })
     })?;
     let mut memories = Vec::new();
@@ -132,20 +218,67 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
     Ok(memories)
 }
 
-pub fn get_unconsolidated_count(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row(
-        "SELECT COUNT(*) FROM memories WHERE consolidated = 0",
-        [],
-        |row| row.get(0),
-    )?)
-}
+/// Recall memories by entity: find all memories referencing an entity and optionally its neighbors.
+pub fn recall_by_entity(conn: &Connection, entity_name: &str, include_neighbors: bool, limit: usize) -> Result<Vec<Memory>> {
+    // Find the entity
+    let entity_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM entities WHERE name = ?1 COLLATE NOCASE",
+            params![entity_name],
+            |row| row.get(0),
+        )
+        .ok();
 
-pub fn get_unconsolidated_memories(conn: &Connection) -> Result<Vec<Memory>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, content, type, created_at, accessed_at, access_count, consolidated, importance, session_id
-         FROM memories WHERE consolidated = 0 ORDER BY created_at ASC",
+    let entity_id = match entity_id {
+        Some(id) => id,
+        None => return Ok(vec![]),
+    };
+
+    // Update entity access count
+    conn.execute(
+        "UPDATE entities SET access_count = access_count + 1, updated_at = datetime('now') WHERE id = ?1",
+        params![entity_id],
     )?;
-    let rows = stmt.query_map([], |row| {
+
+    let mut entity_ids = vec![entity_id];
+
+    if include_neighbors {
+        let mut stmt = conn.prepare(
+            "SELECT target_entity_id FROM relationships WHERE source_entity_id = ?1
+             UNION
+             SELECT source_entity_id FROM relationships WHERE target_entity_id = ?1",
+        )?;
+        let neighbor_ids: Vec<i64> = stmt
+            .query_map(params![entity_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        entity_ids.extend(neighbor_ids);
+    }
+
+    // Find memories referencing any of these entities
+    let placeholders: Vec<String> = entity_ids.iter().map(|_| "?".to_string()).collect();
+    // We use json_each to check if entity_ids array contains any of our target IDs
+    let query = format!(
+        "SELECT DISTINCT m.id, m.content, m.type, m.created_at, m.accessed_at,
+                m.access_count, m.consolidated, m.importance, m.session_id, m.entity_ids
+         FROM memories m, json_each(m.entity_ids) e
+         WHERE e.value IN ({})
+         ORDER BY m.accessed_at DESC
+         LIMIT ?",
+        placeholders.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&query)?;
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = entity_ids
+        .iter()
+        .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+    param_values.push(Box::new(limit as i64));
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        let entity_ids_str: String = row.get(9)?;
+        let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
         Ok(Memory {
             id: row.get(0)?,
             content: row.get(1)?,
@@ -156,6 +289,40 @@ pub fn get_unconsolidated_memories(conn: &Connection) -> Result<Vec<Memory>> {
             consolidated: row.get::<_, i64>(6)? != 0,
             importance: row.get(7)?,
             session_id: row.get(8)?,
+            entity_ids,
+        })
+    })?;
+
+    rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+pub fn get_unconsolidated_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM memories WHERE consolidated = 0",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn get_unconsolidated_memories(conn: &Connection) -> Result<Vec<Memory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, content, type, created_at, accessed_at, access_count, consolidated, importance, session_id, entity_ids
+         FROM memories WHERE consolidated = 0 ORDER BY created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let entity_ids_str: String = row.get(9)?;
+        let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
+        Ok(Memory {
+            id: row.get(0)?,
+            content: row.get(1)?,
+            r#type: row.get(2)?,
+            created_at: row.get(3)?,
+            accessed_at: row.get(4)?,
+            access_count: row.get(5)?,
+            consolidated: row.get::<_, i64>(6)? != 0,
+            importance: row.get(7)?,
+            session_id: row.get(8)?,
+            entity_ids,
         })
     })?;
     rows.into_iter().map(|r| Ok(r?)).collect()
@@ -167,6 +334,216 @@ pub fn mark_consolidated(conn: &Connection, ids: &[i64]) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn delete_memory(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// --- Entity CRUD ---
+
+pub fn upsert_entity(conn: &Connection, name: &str, entity_type: &str, description: Option<&str>) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO entities (name, entity_type, description)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(name) DO UPDATE SET
+             entity_type = ?2,
+             description = COALESCE(?3, entities.description),
+             updated_at = datetime('now')",
+        params![name, entity_type, description],
+    )?;
+    let id = conn.query_row(
+        "SELECT id FROM entities WHERE name = ?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(id)
+}
+
+pub fn update_entity(conn: &Connection, name: &str, description: Option<&str>, confidence: f64) -> Result<()> {
+    conn.execute(
+        "UPDATE entities SET description = COALESCE(?2, description), confidence = ?3, updated_at = datetime('now')
+         WHERE name = ?1 COLLATE NOCASE",
+        params![name, description, confidence],
+    )?;
+    Ok(())
+}
+
+pub fn get_entity_by_name(conn: &Connection, name: &str) -> Result<Option<Entity>> {
+    let result = conn.query_row(
+        "SELECT id, name, entity_type, description, confidence, created_at, updated_at, access_count
+         FROM entities WHERE name = ?1 COLLATE NOCASE",
+        params![name],
+        |row| {
+            Ok(Entity {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                entity_type: row.get(2)?,
+                description: row.get(3)?,
+                confidence: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                access_count: row.get(7)?,
+            })
+        },
+    );
+    match result {
+        Ok(e) => Ok(Some(e)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn get_all_entities(conn: &Connection) -> Result<Vec<Entity>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, entity_type, description, confidence, created_at, updated_at, access_count
+         FROM entities ORDER BY access_count DESC, updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Entity {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            entity_type: row.get(2)?,
+            description: row.get(3)?,
+            confidence: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            access_count: row.get(7)?,
+        })
+    })?;
+    rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+pub fn search_entities(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Entity>> {
+    let fts_query = build_fts_query(query);
+    if fts_query.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.name, e.entity_type, e.description, e.confidence, e.created_at, e.updated_at, e.access_count
+         FROM entities_fts f
+         JOIN entities e ON f.rowid = e.id
+         WHERE entities_fts MATCH ?1
+         ORDER BY f.rank
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+        Ok(Entity {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            entity_type: row.get(2)?,
+            description: row.get(3)?,
+            confidence: row.get(4)?,
+            created_at: row.get(5)?,
+            updated_at: row.get(6)?,
+            access_count: row.get(7)?,
+        })
+    })?;
+    rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+pub fn get_entity_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))?)
+}
+
+// --- Relationship CRUD ---
+
+pub fn upsert_relationship(
+    conn: &Connection,
+    source_id: i64,
+    target_id: i64,
+    relation_type: &str,
+    evidence_id: i64,
+    confidence: f64,
+) -> Result<i64> {
+    // Check for existing relationship
+    let existing: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, evidence_ids FROM relationships
+             WHERE source_entity_id = ?1 AND target_entity_id = ?2 AND relation_type = ?3",
+            params![source_id, target_id, relation_type],
+            |row| Ok((row.get(0)?, row.get::<_, String>(1)?)),
+        )
+        .ok();
+
+    if let Some((id, evidence_json)) = existing {
+        let mut evidence: Vec<i64> = serde_json::from_str(&evidence_json).unwrap_or_default();
+        if !evidence.contains(&evidence_id) {
+            evidence.push(evidence_id);
+        }
+        let new_evidence = serde_json::to_string(&evidence)?;
+        let new_weight = evidence.len() as f64;
+        conn.execute(
+            "UPDATE relationships SET evidence_ids = ?1, weight = ?2, confidence = MAX(confidence, ?3), updated_at = datetime('now')
+             WHERE id = ?4",
+            params![new_evidence, new_weight, confidence, id],
+        )?;
+        Ok(id)
+    } else {
+        let evidence_json = serde_json::to_string(&[evidence_id])?;
+        conn.execute(
+            "INSERT INTO relationships (source_entity_id, target_entity_id, relation_type, evidence_ids, confidence)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![source_id, target_id, relation_type, evidence_json, confidence],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+}
+
+pub fn get_relationships_for_entity(conn: &Connection, entity_id: i64) -> Result<Vec<Relationship>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source_entity_id, target_entity_id, relation_type, weight, evidence_ids, confidence, created_at, updated_at
+         FROM relationships
+         WHERE source_entity_id = ?1 OR target_entity_id = ?1
+         ORDER BY weight DESC",
+    )?;
+    let rows = stmt.query_map(params![entity_id], |row| {
+        let evidence_str: String = row.get(5)?;
+        let evidence_ids: Vec<i64> = serde_json::from_str(&evidence_str).unwrap_or_default();
+        Ok(Relationship {
+            id: row.get(0)?,
+            source_entity_id: row.get(1)?,
+            target_entity_id: row.get(2)?,
+            relation_type: row.get(3)?,
+            weight: row.get(4)?,
+            evidence_ids,
+            confidence: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    })?;
+    rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+pub fn get_all_relationships(conn: &Connection) -> Result<Vec<Relationship>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source_entity_id, target_entity_id, relation_type, weight, evidence_ids, confidence, created_at, updated_at
+         FROM relationships ORDER BY weight DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let evidence_str: String = row.get(5)?;
+        let evidence_ids: Vec<i64> = serde_json::from_str(&evidence_str).unwrap_or_default();
+        Ok(Relationship {
+            id: row.get(0)?,
+            source_entity_id: row.get(1)?,
+            target_entity_id: row.get(2)?,
+            relation_type: row.get(3)?,
+            weight: row.get(4)?,
+            evidence_ids,
+            confidence: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+        })
+    })?;
+    rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+pub fn get_relationship_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM relationships", [], |row| row.get(0))?)
+}
+
+// --- Consolidated CRUD ---
 
 pub fn get_all_consolidated(conn: &Connection) -> Result<Vec<ConsolidatedMemory>> {
     let mut stmt = conn.prepare(
@@ -190,19 +567,8 @@ pub fn get_all_consolidated(conn: &Connection) -> Result<Vec<ConsolidatedMemory>
     rows.into_iter().map(|r| Ok(r?)).collect()
 }
 
-/// Search consolidated memories using FTS5, returning the most relevant results.
 pub fn search_consolidated(conn: &Connection, query: &str, limit: usize) -> Result<Vec<ConsolidatedMemory>> {
-    // Preprocess query: add prefix matching (*) to each term for fuzzy matching
-    let fts_query = query
-        .split_whitespace()
-        .map(|word| {
-            let clean: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
-            if clean.is_empty() { String::new() } else { format!("{}*", clean) }
-        })
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" OR ");
-
+    let fts_query = build_fts_query(query);
     if fts_query.is_empty() {
         return Ok(vec![]);
     }
@@ -241,7 +607,6 @@ pub fn insert_consolidated(conn: &Connection, content: &str, mem_type: &str, sou
     Ok(conn.last_insert_rowid())
 }
 
-/// Check if consolidated DB already contains an entry with this exact content.
 pub fn consolidated_content_exists(conn: &Connection, content: &str) -> Result<bool> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM consolidated WHERE content = ?1",
@@ -251,12 +616,10 @@ pub fn consolidated_content_exists(conn: &Connection, content: &str) -> Result<b
     Ok(count > 0)
 }
 
-/// Count total consolidated entries.
 pub fn get_consolidated_count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM consolidated", [], |row| row.get(0))?)
 }
 
-/// Update the content of a consolidated memory by ID.
 pub fn update_consolidated(conn: &Connection, id: i64, content: &str) -> Result<bool> {
     let updated = conn.execute(
         "UPDATE consolidated SET content = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -271,6 +634,8 @@ pub fn remove_consolidated(conn: &Connection, ids: &[i64]) -> Result<()> {
     }
     Ok(())
 }
+
+// --- Skills ---
 
 pub fn upsert_skill(conn: &Connection, name: &str, content: &str, source_ids: &[i64]) -> Result<()> {
     let source_json = serde_json::to_string(source_ids)?;
@@ -301,6 +666,8 @@ pub fn get_all_skills(conn: &Connection) -> Result<Vec<Skill>> {
     rows.into_iter().map(|r| Ok(r?)).collect()
 }
 
+// --- Meta ---
+
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
@@ -322,16 +689,29 @@ pub fn get_meta(conn: &Connection, key: &str) -> Result<Option<String>> {
     }
 }
 
+// --- Stats ---
+
 pub fn get_stats(raw_conn: &Connection, cons_conn: &Connection) -> Result<Stats> {
     let raw_count: i64 = raw_conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))?;
     let unconsolidated_count: i64 = raw_conn.query_row("SELECT COUNT(*) FROM memories WHERE consolidated = 0", [], |r| r.get(0))?;
     let consolidated_count: i64 = cons_conn.query_row("SELECT COUNT(*) FROM consolidated", [], |r| r.get(0))?;
     let skill_count: i64 = cons_conn.query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0))?;
+    let entity_count: i64 = get_entity_count(raw_conn)?;
+    let relationship_count: i64 = get_relationship_count(raw_conn)?;
     let last_sleep = get_meta(cons_conn, "last_sleep")?;
-    Ok(Stats { raw_count, unconsolidated_count, consolidated_count, skill_count, last_sleep })
+    Ok(Stats { raw_count, unconsolidated_count, consolidated_count, skill_count, entity_count, relationship_count, last_sleep })
 }
 
-pub fn delete_memory(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
-    Ok(())
+// --- Helpers ---
+
+fn build_fts_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|word| {
+            let clean: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+            if clean.is_empty() { String::new() } else { format!("{}*", clean) }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
