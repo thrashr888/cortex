@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0] - 2026-03-05
+
+### Added
+- **Knowledge graph architecture**: Memories now automatically extract entities (technologies, languages, tools, concepts) and relationships via LLM on save.
+- **Entity-based recall**: `cortex recall` tries graph search with 1-hop neighbor expansion before falling back to FTS5 text search.
+- **Graph-aware consolidation**: `sleep` and `dream` analyze the entity graph to discover new entities, relationships, and update entity descriptions/confidence.
+- **Key Entities section** in context output showing entities with their relationships.
+- New database tables: `entities` (with FTS5), `relationships` (with indexes) in `raw.db`.
+- `entity_ids` column on `memories` and `consolidated` tables for graph linkage.
+- `entity_count` and `relationship_count` in stats output.
+- Entity extraction LLM function (`llm::extract_entities`).
+- `recall_by_entity()` for graph-based memory retrieval.
+
+### Changed
+- `sleep` consolidation prompt now includes current entity graph for smarter pattern discovery.
+- `dream` reflection prompt analyzes graph structure for clusters, missing relationships, and contradictions.
+- `context` output includes entity names in compact format, full entity details in standard format.
+- Stats display now shows entity and relationship counts.
+- MCP tool descriptions updated to mention entity extraction and graph search.
+
+### Migration
+- Existing databases auto-migrate on first run (adds columns and tables, no data loss).
+- No new dependencies — pure SQLite with FTS5.
+
 ## [0.3.0] - 2026-02-28
 
 ### Added
