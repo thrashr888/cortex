@@ -770,6 +770,98 @@ mod tests {
     }
 
     #[test]
+    fn weak_global_partial_match_should_not_leak_into_strong_project_context() {
+        let scratch = ScratchSpace::new().unwrap();
+        let raw_conn = db::open_raw_db(&scratch.project_dir.join("raw.db")).unwrap();
+        let cons_conn = db::open_consolidated_db(&scratch.project_dir.join("consolidated.db")).unwrap();
+        let global_cons = db::open_consolidated_db(&scratch.global_dir.join("consolidated.db")).unwrap();
+
+        let raw_id = db::save_memory(
+            &raw_conn,
+            "For uploads, prefer a 5 second retry cap with resumable chunked retries.",
+            "preference",
+            "eval",
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &cons_conn,
+            "For uploads, prefer a 5 second retry cap with resumable chunked retries.",
+            "preference",
+            &[raw_id],
+            1.0,
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &global_cons,
+            "I prefer concise terminal tooling for daily work.",
+            "preference",
+            &[],
+            1.0,
+        )
+        .unwrap();
+
+        let ctx = context::format_context(
+            &cons_conn,
+            &raw_conn,
+            Some(&global_cons),
+            false,
+            Some("upload retry preference"),
+            3,
+        )
+        .unwrap();
+
+        assert!(ctx.contains("prefer a 5 second retry cap"), "ctx={ctx}");
+        assert!(!ctx.contains("Global Knowledge"), "ctx={ctx}");
+        assert!(!ctx.contains("concise terminal tooling"), "ctx={ctx}");
+    }
+
+    #[test]
+    fn near_match_global_distractor_should_stay_out_of_project_context() {
+        let scratch = ScratchSpace::new().unwrap();
+        let raw_conn = db::open_raw_db(&scratch.project_dir.join("raw.db")).unwrap();
+        let cons_conn = db::open_consolidated_db(&scratch.project_dir.join("consolidated.db")).unwrap();
+        let global_cons = db::open_consolidated_db(&scratch.global_dir.join("consolidated.db")).unwrap();
+
+        let raw_id = db::save_memory(
+            &raw_conn,
+            "Upload retry cap should stay at 5 seconds to preserve snappy UX.",
+            "decision",
+            "eval",
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &cons_conn,
+            "Upload retry cap should stay at 5 seconds to preserve snappy UX.",
+            "decision",
+            &[raw_id],
+            1.0,
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &global_cons,
+            "API retry cap can extend to 30 seconds for long-running sync jobs.",
+            "decision",
+            &[],
+            1.0,
+        )
+        .unwrap();
+
+        let ctx = context::format_context(
+            &cons_conn,
+            &raw_conn,
+            Some(&global_cons),
+            false,
+            Some("upload retry cap"),
+            3,
+        )
+        .unwrap();
+
+        assert!(ctx.contains("Upload retry cap should stay at 5 seconds"), "ctx={ctx}");
+        assert!(!ctx.contains("Global Knowledge"), "ctx={ctx}");
+        assert!(!ctx.contains("30 seconds for long-running sync jobs"), "ctx={ctx}");
+    }
+
+    #[test]
     fn benchmark_v2_stays_above_quality_bar() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("eval")

@@ -219,6 +219,54 @@
       "expected_project_keys": ["retry_logic"],
       "required_context_substrings": ["Upload retry backoff should cap at 5 seconds"],
       "forbidden_context_substrings": ["Global Knowledge", "morning meetings"]
+    },
+    {
+      "name": "weak global partial match should not leak into strong project context",
+      "query": "upload retry preference",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "upload_retry_pref",
+          "content": "For uploads, prefer a 5 second retry cap with resumable chunked retries.",
+          "type": "preference",
+          "confidence": 1.0
+        }
+      ],
+      "global_memories": [
+        {
+          "key": "generic_pref",
+          "content": "I prefer concise terminal tooling for daily work.",
+          "type": "preference",
+          "confidence": 1.0
+        }
+      ],
+      "expected_project_keys": ["upload_retry_pref"],
+      "required_context_substrings": ["prefer a 5 second retry cap"],
+      "forbidden_context_substrings": ["Global Knowledge", "concise terminal tooling"]
+    },
+    {
+      "name": "near-match global distractor should stay out of project context",
+      "query": "upload retry cap",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "upload_cap",
+          "content": "Upload retry cap should stay at 5 seconds to preserve snappy UX.",
+          "type": "decision",
+          "confidence": 1.0
+        }
+      ],
+      "global_memories": [
+        {
+          "key": "api_cap",
+          "content": "API retry cap can extend to 30 seconds for long-running sync jobs.",
+          "type": "decision",
+          "confidence": 1.0
+        }
+      ],
+      "expected_project_keys": ["upload_cap"],
+      "required_context_substrings": ["Upload retry cap should stay at 5 seconds"],
+      "forbidden_context_substrings": ["Global Knowledge", "30 seconds for long-running sync jobs"]
     }
   ]
 }

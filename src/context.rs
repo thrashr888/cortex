@@ -26,7 +26,7 @@ pub fn format_context(
     let stats = db::get_stats(raw_conn, cons_conn)?;
 
     // Also apply query filter to global memories
-    let global_consolidated = match global_cons_conn {
+    let mut global_consolidated = match global_cons_conn {
         Some(gc) => match query {
             Some(q) if !q.trim().is_empty() => {
                 db::search_consolidated(gc, q, std::cmp::max(1, limit / 2)).unwrap_or_default()
@@ -58,6 +58,8 @@ pub fn format_context(
             || (preference_query && global_strength > 0)
         {
             consolidated.clear();
+        } else if project_strength >= query_term_count && project_strength > global_strength {
+            global_consolidated.clear();
         }
     }
 
