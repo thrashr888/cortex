@@ -813,6 +813,9 @@ fn focus_memory_results(memories: Vec<Memory>, query: &str, limit: usize) -> Vec
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
 
     let top_score = scored.first().map(|entry| entry.0).unwrap_or(0);
+    if top_score == 0 {
+        return Vec::new();
+    }
     let min_score = minimum_match_score(top_score);
     let mut selected: Vec<Memory> = Vec::new();
     for (score, _id, memory) in scored {
@@ -863,6 +866,9 @@ fn focus_consolidated_results(
     });
 
     let top_score = scored.first().map(|entry| entry.0).unwrap_or(0);
+    if top_score == 0 {
+        return Vec::new();
+    }
     let min_score = minimum_match_score(top_score);
     let mut selected: Vec<ConsolidatedMemory> = Vec::new();
     for (score, _confidence, _access_count, _id, memory) in scored {

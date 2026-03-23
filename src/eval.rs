@@ -688,6 +688,51 @@ mod tests {
     }
 
     #[test]
+    fn project_specific_preference_beats_generic_global_preference() {
+        let scratch = ScratchSpace::new().unwrap();
+        let raw_conn = db::open_raw_db(&scratch.project_dir.join("raw.db")).unwrap();
+        let cons_conn = db::open_consolidated_db(&scratch.project_dir.join("consolidated.db")).unwrap();
+        let global_cons = db::open_consolidated_db(&scratch.global_dir.join("consolidated.db")).unwrap();
+
+        let raw_id = db::save_memory(
+            &raw_conn,
+            "For uploads, prefer resumable chunked transfers over single-shot uploads.",
+            "preference",
+            "eval",
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &cons_conn,
+            "For uploads, prefer resumable chunked transfers over single-shot uploads.",
+            "preference",
+            &[raw_id],
+            1.0,
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &global_cons,
+            "I prefer Rust and Go for CLI tools.",
+            "preference",
+            &[],
+            1.0,
+        )
+        .unwrap();
+
+        let ctx = context::format_context(
+            &cons_conn,
+            &raw_conn,
+            Some(&global_cons),
+            false,
+            Some("upload preference"),
+            2,
+        )
+        .unwrap();
+
+        assert!(ctx.contains("prefer resumable chunked transfers"), "ctx={ctx}");
+        assert!(!ctx.contains("Rust and Go for CLI tools"), "ctx={ctx}");
+    }
+
+    #[test]
     fn confidence_controls_top_rank_for_trace_like_preferences() {
         let path = write_fixture(
             r#"{

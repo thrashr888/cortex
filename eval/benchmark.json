@@ -121,6 +121,30 @@
       "forbidden_context_substrings": ["Python for quick CLI tools"]
     },
     {
+      "name": "project-specific preference should beat generic global preference",
+      "query": "upload preference",
+      "limit": 2,
+      "project_memories": [
+        {
+          "key": "upload_pref",
+          "content": "For uploads, prefer resumable chunked transfers over single-shot uploads.",
+          "type": "preference",
+          "confidence": 1.0
+        }
+      ],
+      "global_memories": [
+        {
+          "key": "lang_pref",
+          "content": "I prefer Rust and Go for CLI tools.",
+          "type": "preference",
+          "confidence": 1.0
+        }
+      ],
+      "expected_project_keys": ["upload_pref"],
+      "required_context_substrings": ["prefer resumable chunked transfers"],
+      "forbidden_context_substrings": ["Rust and Go for CLI tools."]
+    },
+    {
       "name": "contradiction recall should prefer current policy",
       "query": "retry policy upload",
       "limit": 2,
