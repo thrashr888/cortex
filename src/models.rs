@@ -77,6 +77,8 @@ pub struct ConsolidatedMemory {
     pub created_at: String,
     pub updated_at: String,
     pub access_count: i64,
+    pub active: bool,
+    pub superseded_by: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

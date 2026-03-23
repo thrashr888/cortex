@@ -641,6 +641,38 @@ mod tests {
     }
 
     #[test]
+    fn superseded_memories_are_hidden_from_search_and_context() {
+        let scratch = ScratchSpace::new().unwrap();
+        let raw_conn = db::open_raw_db(&scratch.project_dir.join("raw.db")).unwrap();
+        let cons_conn = db::open_consolidated_db(&scratch.project_dir.join("consolidated.db")).unwrap();
+
+        let old_id = db::insert_consolidated(
+            &cons_conn,
+            "Upload retry policy uses exponential backoff up to 30 seconds.",
+            "decision",
+            &[],
+            0.8,
+        )
+        .unwrap();
+        let new_id = db::insert_consolidated(
+            &cons_conn,
+            "Upload retry policy now caps backoff at 5 seconds to preserve snappy UX.",
+            "decision",
+            &[],
+            1.0,
+        )
+        .unwrap();
+        db::mark_consolidated_superseded(&cons_conn, old_id, new_id).unwrap();
+
+        let search = db::search_consolidated(&cons_conn, "retry policy upload", 5).unwrap();
+        assert_eq!(search.iter().map(|m| m.id).collect::<Vec<_>>(), vec![new_id]);
+
+        let ctx = context::format_context(&cons_conn, &raw_conn, None, false, Some("retry policy upload"), 5).unwrap();
+        assert!(ctx.contains("caps backoff at 5 seconds"), "ctx={ctx}");
+        assert!(!ctx.contains("up to 30 seconds"), "ctx={ctx}");
+    }
+
+    #[test]
     fn contradiction_case_prefers_current_policy_only() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("eval")

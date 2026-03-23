@@ -104,7 +104,9 @@ pub fn open_consolidated_db(path: &Path) -> Result<Connection> {
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             access_count INTEGER NOT NULL DEFAULT 0,
-            entity_ids TEXT NOT NULL DEFAULT '[]'
+            entity_ids TEXT NOT NULL DEFAULT '[]',
+            active INTEGER NOT NULL DEFAULT 1,
+            superseded_by INTEGER
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS consolidated_fts USING fts5(content, type, content=consolidated, content_rowid=id, tokenize='porter unicode61');
         CREATE TRIGGER IF NOT EXISTS consolidated_ai AFTER INSERT ON consolidated BEGIN
@@ -136,6 +138,16 @@ pub fn open_consolidated_db(path: &Path) -> Result<Connection> {
         .is_ok();
     if !has_entity_ids {
         conn.execute_batch("ALTER TABLE consolidated ADD COLUMN entity_ids TEXT NOT NULL DEFAULT '[]';")?;
+    }
+
+    let has_active = conn.prepare("SELECT active FROM consolidated LIMIT 0").is_ok();
+    if !has_active {
+        conn.execute_batch("ALTER TABLE consolidated ADD COLUMN active INTEGER NOT NULL DEFAULT 1;")?;
+    }
+
+    let has_superseded_by = conn.prepare("SELECT superseded_by FROM consolidated LIMIT 0").is_ok();
+    if !has_superseded_by {
+        conn.execute_batch("ALTER TABLE consolidated ADD COLUMN superseded_by INTEGER;")?;
     }
 
     Ok(conn)
@@ -547,8 +559,8 @@ pub fn get_relationship_count(conn: &Connection) -> Result<i64> {
 
 pub fn get_all_consolidated(conn: &Connection) -> Result<Vec<ConsolidatedMemory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, content, type, source_ids, confidence, created_at, updated_at, access_count
-         FROM consolidated ORDER BY updated_at DESC",
+        "SELECT id, content, type, source_ids, confidence, created_at, updated_at, access_count, active, superseded_by
+         FROM consolidated WHERE active = 1 ORDER BY updated_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         let source_ids_str: String = row.get(3)?;
@@ -562,6 +574,8 @@ pub fn get_all_consolidated(conn: &Connection) -> Result<Vec<ConsolidatedMemory>
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
             access_count: row.get(7)?,
+            active: row.get::<_, i64>(8)? != 0,
+            superseded_by: row.get(9)?,
         })
     })?;
     rows.into_iter().map(|r| Ok(r?)).collect()
@@ -574,10 +588,10 @@ pub fn search_consolidated(conn: &Connection, query: &str, limit: usize) -> Resu
     }
 
     let mut stmt = conn.prepare(
-        "SELECT c.id, c.content, c.type, c.source_ids, c.confidence, c.created_at, c.updated_at, c.access_count
+        "SELECT c.id, c.content, c.type, c.source_ids, c.confidence, c.created_at, c.updated_at, c.access_count, c.active, c.superseded_by
          FROM consolidated_fts f
          JOIN consolidated c ON f.rowid = c.id
-         WHERE consolidated_fts MATCH ?1
+         WHERE consolidated_fts MATCH ?1 AND c.active = 1
          ORDER BY bm25(consolidated_fts), c.confidence DESC, c.access_count DESC
          LIMIT ?2",
     )?;
@@ -593,6 +607,8 @@ pub fn search_consolidated(conn: &Connection, query: &str, limit: usize) -> Resu
             created_at: row.get(5)?,
             updated_at: row.get(6)?,
             access_count: row.get(7)?,
+            active: row.get::<_, i64>(8)? != 0,
+            superseded_by: row.get(9)?,
         })
     })?;
     let memories: Vec<ConsolidatedMemory> = rows.into_iter().map(|r| Ok(r?)).collect::<Result<_>>()?;
@@ -627,6 +643,14 @@ pub fn update_consolidated(conn: &Connection, id: i64, content: &str) -> Result<
         params![content, id],
     )?;
     Ok(updated > 0)
+}
+
+pub fn mark_consolidated_superseded(conn: &Connection, old_id: i64, new_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE consolidated SET active = 0, superseded_by = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![old_id, new_id],
+    )?;
+    Ok(())
 }
 
 pub fn remove_consolidated(conn: &Connection, ids: &[i64]) -> Result<()> {
