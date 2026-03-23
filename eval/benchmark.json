@@ -1,0 +1,200 @@
+{
+  "name": "cortex-memory-quality-v2",
+  "cases": [
+    {
+      "name": "project bugfix recall with distractors",
+      "query": "upload race lock",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "upload_fix",
+          "content": "Fixed race condition in upload handler by locking the temp file writer.",
+          "type": "bugfix",
+          "entities": [
+            {"name": "upload handler", "type": "service"},
+            {"name": "temp file writer", "type": "component"}
+          ],
+          "relationships": [
+            {"source": "upload handler", "target": "temp file writer", "type": "uses"}
+          ]
+        },
+        {
+          "key": "upload_perf",
+          "content": "Upload throughput improved after increasing worker count and removing lock contention in the preview generator.",
+          "type": "pattern"
+        },
+        {
+          "key": "ui_race",
+          "content": "A UI race appears when the upload progress component rerenders during reconnect.",
+          "type": "bugfix"
+        }
+      ],
+      "expected_project_keys": ["upload_fix"],
+      "required_context_substrings": ["race condition in upload handler"],
+      "forbidden_context_substrings": ["preview generator", "upload progress component"]
+    },
+    {
+      "name": "sqlite decision should beat nearby distractors",
+      "query": "sqlite simplicity local cli",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "db_choice",
+          "content": "Chose SQLite over Postgres for simplicity in the local CLI prototype.",
+          "type": "decision",
+          "entities": [
+            {"name": "SQLite", "type": "technology"},
+            {"name": "Postgres", "type": "technology"}
+          ],
+          "relationships": [
+            {"source": "SQLite", "target": "Postgres", "type": "alternative_to"}
+          ]
+        },
+        {
+          "key": "sqlite_migration",
+          "content": "SQLite migration performance improved after batching writes in the import path.",
+          "type": "bugfix"
+        },
+        {
+          "key": "cli_logging",
+          "content": "The local CLI now logs structured JSON for import progress and retry decisions.",
+          "type": "pattern"
+        }
+      ],
+      "expected_project_keys": ["db_choice"],
+      "required_context_substrings": ["SQLite over Postgres for simplicity"],
+      "forbidden_context_substrings": ["batching writes in the import path"]
+    },
+    {
+      "name": "global preference recall with project distractor",
+      "query": "rust cli preference",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "cli_parser",
+          "content": "The Rust CLI parser now accepts repeated --tag flags for experiment labels.",
+          "type": "pattern"
+        }
+      ],
+      "global_memories": [
+        {
+          "key": "lang_pref",
+          "content": "I prefer Rust and Go for CLI tools.",
+          "type": "preference",
+          "confidence": 1.0,
+          "entities": [
+            {"name": "Rust", "type": "language"},
+            {"name": "Go", "type": "language"}
+          ]
+        },
+        {
+          "key": "editor_pref",
+          "content": "I prefer concise terminal-first tooling and small reviewable diffs.",
+          "type": "preference",
+          "confidence": 0.7
+        }
+      ],
+      "expected_global_keys": ["lang_pref"],
+      "required_context_substrings": ["I prefer Rust and Go for CLI tools."],
+      "forbidden_context_substrings": ["repeated --tag flags"]
+    },
+    {
+      "name": "trace preference ranking keeps current preference over old one",
+      "query": "cli preference",
+      "limit": 1,
+      "global_memories": [
+        {
+          "key": "old_python_pref",
+          "content": "I prefer Python for quick CLI tools.",
+          "type": "preference",
+          "confidence": 0.3
+        },
+        {
+          "key": "current_rust_pref",
+          "content": "I prefer Rust and Go for CLI tools.",
+          "type": "preference",
+          "confidence": 1.0
+        }
+      ],
+      "expected_global_keys": ["current_rust_pref"],
+      "required_context_substrings": ["Rust and Go for CLI tools"],
+      "forbidden_context_substrings": ["Python for quick CLI tools"]
+    },
+    {
+      "name": "contradiction recall should prefer current policy",
+      "query": "retry policy upload",
+      "limit": 2,
+      "project_memories": [
+        {
+          "key": "old_policy",
+          "content": "Upload retry policy uses exponential backoff up to 30 seconds.",
+          "type": "decision"
+        },
+        {
+          "key": "current_policy",
+          "content": "Upload retry policy now caps backoff at 5 seconds to preserve snappy UX.",
+          "type": "decision"
+        }
+      ],
+      "expected_project_keys": ["current_policy"],
+      "disallowed_project_keys": ["old_policy"],
+      "required_context_substrings": ["caps backoff at 5 seconds"],
+      "forbidden_context_substrings": ["up to 30 seconds"]
+    },
+    {
+      "name": "entity-driven recall should surface canonical memory",
+      "query": "UserList",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "userlist_eager",
+          "content": "Always use eager loading for UserList queries to avoid N+1 fetches.",
+          "type": "pattern",
+          "entities": [
+            {"name": "UserList", "type": "service"}
+          ]
+        },
+        {
+          "key": "user_profile",
+          "content": "User profile queries should cache avatar lookups for 30 seconds.",
+          "type": "pattern"
+        },
+        {
+          "key": "list_sorting",
+          "content": "List sorting changed to newest-first for activity feed pagination.",
+          "type": "decision"
+        }
+      ],
+      "expected_project_keys": ["userlist_eager"],
+      "required_context_substrings": ["eager loading for UserList queries"],
+      "forbidden_context_substrings": ["avatar lookups"]
+    },
+    {
+      "name": "context should stay project-scoped when globals do not match",
+      "query": "upload retry backoff",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "retry_logic",
+          "content": "Upload retry backoff should cap at 5 seconds to preserve snappy UX.",
+          "type": "decision"
+        }
+      ],
+      "global_memories": [
+        {
+          "key": "lang_pref",
+          "content": "I prefer Rust and Go for CLI tools.",
+          "type": "preference"
+        },
+        {
+          "key": "meeting_pref",
+          "content": "I prefer morning meetings when deep work blocks are protected in the afternoon.",
+          "type": "preference"
+        }
+      ],
+      "expected_project_keys": ["retry_logic"],
+      "required_context_substrings": ["Upload retry backoff should cap at 5 seconds"],
+      "forbidden_context_substrings": ["Global Knowledge", "morning meetings"]
+    }
+  ]
+}

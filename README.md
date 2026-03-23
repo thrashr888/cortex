@@ -102,9 +102,23 @@ cortex dream
 | `cortex dream [--global]` | Deep reflection (2-3 LLM calls) |
 | `cortex wake` | Session start catch-up + context output |
 | `cortex context [--compact]` | Output memory context for prompt injection |
+| `cortex eval [--fixture eval/benchmark.json] [--json]` | Run the deterministic memory-quality benchmark |
 | `cortex mcp` | Start MCP stdio server |
 
 Add `--json` to `recall` and `stats` for JSON output. Use `--dir <path>` to target a different project.
+
+## Benchmarking memory quality
+
+A deterministic benchmark fixture now lives at `eval/benchmark.json`.
+It exercises project recall, global recall, and query-focused context packing without requiring any LLM credentials.
+
+```bash
+cargo run -- eval
+cargo run -- eval --json
+```
+
+This is intended to be the optimization target for autonomous improvement loops.
+A starter autoresearch program lives at `autoresearch/program.md`.
 
 ## MCP Server
 

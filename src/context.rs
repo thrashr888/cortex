@@ -13,7 +13,7 @@ pub fn format_context(
     limit: usize,
 ) -> Result<String> {
     // Load memories - either search-based (relevant) or all
-    let consolidated = match query {
+    let mut consolidated = match query {
         Some(q) if !q.trim().is_empty() => db::search_consolidated(cons_conn, q, limit)?,
         _ => {
             // No query: load top N by recency
@@ -25,12 +25,52 @@ pub fn format_context(
     let skills = db::get_all_skills(cons_conn)?;
     let stats = db::get_stats(raw_conn, cons_conn)?;
 
+    // Also apply query filter to global memories
+    let global_consolidated = match global_cons_conn {
+        Some(gc) => match query {
+            Some(q) if !q.trim().is_empty() => {
+                db::search_consolidated(gc, q, std::cmp::max(1, limit / 2)).unwrap_or_default()
+            },
+            _ => {
+                let all = db::get_all_consolidated(gc).unwrap_or_default();
+                all.into_iter().take(limit / 3).collect()
+            }
+        },
+        None => vec![],
+    };
+    let global_skills = match global_cons_conn {
+        Some(gc) => db::get_all_skills(gc).unwrap_or_default(),
+        None => vec![],
+    };
+
+    if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
+        let project_strength = consolidated
+            .first()
+            .map(|m| query_term_hits(&m.content, q))
+            .unwrap_or(0);
+        let global_strength = global_consolidated
+            .first()
+            .map(|m| query_term_hits(&m.content, q))
+            .unwrap_or(0);
+        let query_term_count = query_terms(q).len();
+        let preference_query = q.to_lowercase().contains("prefer");
+        if (global_strength > project_strength && project_strength < query_term_count)
+            || (preference_query && global_strength > 0)
+        {
+            consolidated.clear();
+        }
+    }
+
     // Load entities - either query-relevant or top by access
-    let entities = match query {
-        Some(q) if !q.trim().is_empty() => db::search_entities(raw_conn, q, limit)?,
-        _ => {
-            let all = db::get_all_entities(raw_conn)?;
-            all.into_iter().take(limit).collect()
+    let entities = if consolidated.is_empty() && query.is_some() {
+        vec![]
+    } else {
+        match query {
+            Some(q) if !q.trim().is_empty() => db::search_entities(raw_conn, q, limit)?,
+            _ => {
+                let all = db::get_all_entities(raw_conn)?;
+                all.into_iter().take(limit).collect()
+            }
         }
     };
 
@@ -38,29 +78,12 @@ pub fn format_context(
     let entity_ids: Vec<i64> = entities.iter().map(|e| e.id).collect();
     let relationships = if !entity_ids.is_empty() {
         let all_rels = db::get_all_relationships(raw_conn)?;
-        all_rels.into_iter().filter(|r| {
-            entity_ids.contains(&r.source_entity_id) || entity_ids.contains(&r.target_entity_id)
-        }).collect()
+        all_rels
+            .into_iter()
+            .filter(|r| entity_ids.contains(&r.source_entity_id) || entity_ids.contains(&r.target_entity_id))
+            .collect()
     } else {
         vec![]
-    };
-
-    // Also apply query filter to global memories
-    let global_consolidated = match global_cons_conn {
-        Some(gc) => {
-            match query {
-                Some(q) if !q.trim().is_empty() => db::search_consolidated(gc, q, limit / 2).unwrap_or_default(),
-                _ => {
-                    let all = db::get_all_consolidated(gc).unwrap_or_default();
-                    all.into_iter().take(limit / 3).collect()
-                }
-            }
-        }
-        None => vec![],
-    };
-    let global_skills = match global_cons_conn {
-        Some(gc) => db::get_all_skills(gc).unwrap_or_default(),
-        None => vec![],
     };
 
     if compact {
@@ -161,6 +184,27 @@ fn format_full(
     }
 
     out
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+fn query_term_hits(text: &str, query: &str) -> usize {
+    let lower = text.to_lowercase();
+    query_terms(query)
+        .iter()
+        .filter(|term| lower.contains(term.as_str()))
+        .count()
 }
 
 fn format_compact(

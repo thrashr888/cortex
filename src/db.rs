@@ -187,10 +187,10 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
          FROM memories_fts f
          JOIN memories m ON f.rowid = m.id
          WHERE memories_fts MATCH ?1
-         ORDER BY f.rank * (1.0 / (1.0 + (julianday('now') - julianday(m.accessed_at))))
+         ORDER BY bm25(memories_fts), m.importance DESC, m.access_count DESC
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+    let rows = stmt.query_map(params![fts_query, candidate_limit(limit) as i64], |row| {
         let entity_ids_str: String = row.get(9)?;
         let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
         Ok(Memory {
@@ -215,7 +215,7 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
         )?;
         memories.push(m);
     }
-    Ok(memories)
+    Ok(focus_memory_results(memories, query, limit))
 }
 
 /// Recall memories by entity: find all memories referencing an entity and optionally its neighbors.
@@ -578,10 +578,10 @@ pub fn search_consolidated(conn: &Connection, query: &str, limit: usize) -> Resu
          FROM consolidated_fts f
          JOIN consolidated c ON f.rowid = c.id
          WHERE consolidated_fts MATCH ?1
-         ORDER BY f.rank * c.confidence * (1.0 / (1.0 + (julianday('now') - julianday(c.updated_at)) / 30.0))
+         ORDER BY bm25(consolidated_fts), c.confidence DESC, c.access_count DESC
          LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+    let rows = stmt.query_map(params![fts_query, candidate_limit(limit) as i64], |row| {
         let source_ids_str: String = row.get(3)?;
         let source_ids: Vec<i64> = serde_json::from_str(&source_ids_str).unwrap_or_default();
         Ok(ConsolidatedMemory {
@@ -595,7 +595,8 @@ pub fn search_consolidated(conn: &Connection, query: &str, limit: usize) -> Resu
             access_count: row.get(7)?,
         })
     })?;
-    rows.into_iter().map(|r| Ok(r?)).collect()
+    let memories: Vec<ConsolidatedMemory> = rows.into_iter().map(|r| Ok(r?)).collect::<Result<_>>()?;
+    Ok(focus_consolidated_results(memories, query, limit))
 }
 
 pub fn insert_consolidated(conn: &Connection, content: &str, mem_type: &str, source_ids: &[i64], confidence: f64) -> Result<i64> {
@@ -704,14 +705,203 @@ pub fn get_stats(raw_conn: &Connection, cons_conn: &Connection) -> Result<Stats>
 
 // --- Helpers ---
 
-fn build_fts_query(query: &str) -> String {
+fn candidate_limit(limit: usize) -> usize {
+    std::cmp::max(limit.saturating_mul(4), limit.max(1))
+}
+
+fn query_terms(query: &str) -> Vec<String> {
     query
         .split_whitespace()
         .map(|word| {
-            let clean: String = word.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
-            if clean.is_empty() { String::new() } else { format!("{}*", clean) }
+            word.chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .collect::<String>()
+                .to_lowercase()
         })
-        .filter(|s| !s.is_empty())
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+fn text_match_score(text: &str, terms: &[String], full_query: &str) -> usize {
+    let lower = text.to_lowercase();
+    let term_hits = terms.iter().filter(|term| lower.contains(term.as_str())).count();
+    let phrase_bonus = if !full_query.trim().is_empty() && lower.contains(&full_query.to_lowercase()) {
+        1
+    } else {
+        0
+    };
+    term_hits * 10 + phrase_bonus
+}
+
+fn query_term_hits(text: &str, terms: &[String]) -> usize {
+    let lower = text.to_lowercase();
+    terms.iter().filter(|term| lower.contains(term.as_str())).count()
+}
+
+fn text_similarity(a: &str, b: &str) -> f64 {
+    let a_tokens = content_tokens(a);
+    let b_tokens = content_tokens(b);
+    if a_tokens.is_empty() || b_tokens.is_empty() {
+        return 0.0;
+    }
+    let overlap = a_tokens.intersection(&b_tokens).count();
+    let union = a_tokens.union(&b_tokens).count();
+    overlap as f64 / union as f64
+}
+
+fn content_tokens(text: &str) -> std::collections::HashSet<String> {
+    text.split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|token| token.len() >= 3)
+        .collect()
+}
+
+fn minimum_match_score(top_score: usize) -> usize {
+    if top_score <= 10 {
+        top_score
+    } else {
+        ((top_score / 10) * 3).div_ceil(4) * 10
+    }
+}
+
+fn focus_memory_results(memories: Vec<Memory>, query: &str, limit: usize) -> Vec<Memory> {
+    if memories.is_empty() {
+        return memories;
+    }
+
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return memories.into_iter().take(limit).collect();
+    }
+
+    let mut scored: Vec<(usize, i64, Memory)> = memories
+        .into_iter()
+        .map(|memory| {
+            let score = text_match_score(&memory.content, &terms, query);
+            (score, memory.id, memory)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    let top_score = scored.first().map(|entry| entry.0).unwrap_or(0);
+    let min_score = minimum_match_score(top_score);
+    let mut selected: Vec<Memory> = Vec::new();
+    for (score, _id, memory) in scored {
+        if score < min_score {
+            continue;
+        }
+        let is_redundant = selected.iter().any(|existing| {
+            text_similarity(&existing.content, &memory.content) >= 0.45
+                && query_term_hits(&existing.content, &terms) == query_term_hits(&memory.content, &terms)
+        });
+        if is_redundant {
+            continue;
+        }
+        selected.push(memory);
+        if selected.len() >= limit {
+            break;
+        }
+    }
+    selected
+}
+
+fn focus_consolidated_results(
+    memories: Vec<ConsolidatedMemory>,
+    query: &str,
+    limit: usize,
+) -> Vec<ConsolidatedMemory> {
+    if memories.is_empty() {
+        return memories;
+    }
+
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return memories.into_iter().take(limit).collect();
+    }
+
+    let mut scored: Vec<(usize, f64, i64, i64, ConsolidatedMemory)> = memories
+        .into_iter()
+        .map(|memory| {
+            let score = text_match_score(&memory.content, &terms, query);
+            (score, memory.confidence, memory.access_count, memory.id, memory)
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.3.cmp(&a.3))
+    });
+
+    let top_score = scored.first().map(|entry| entry.0).unwrap_or(0);
+    let min_score = minimum_match_score(top_score);
+    let mut selected: Vec<ConsolidatedMemory> = Vec::new();
+    for (score, _confidence, _access_count, _id, memory) in scored {
+        if score < min_score {
+            continue;
+        }
+        let is_redundant = selected.iter().any(|existing| {
+            text_similarity(&existing.content, &memory.content) >= 0.45
+                && query_term_hits(&existing.content, &terms) == query_term_hits(&memory.content, &terms)
+        });
+        if is_redundant {
+            continue;
+        }
+        selected.push(memory);
+        if selected.len() >= limit {
+            break;
+        }
+    }
+    selected
+}
+
+fn focus_results<T, F>(items: Vec<T>, query: &str, limit: usize, text_fn: F) -> Vec<T>
+where
+    F: Fn(&T) -> &str,
+{
+    if items.is_empty() {
+        return items;
+    }
+
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return items.into_iter().take(limit).collect();
+    }
+
+    let mut scored: Vec<(usize, T)> = items
+        .into_iter()
+        .map(|item| {
+            let score = text_match_score(text_fn(&item), &terms, query);
+            (score, item)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let top_score = scored.first().map(|entry| entry.0).unwrap_or(0);
+    let min_score = minimum_match_score(top_score);
+    let mut filtered: Vec<T> = scored
+        .into_iter()
+        .filter(|entry| entry.0 >= min_score)
+        .map(|entry| entry.1)
+        .take(limit)
+        .collect();
+
+    if filtered.is_empty() {
+        filtered = Vec::new();
+    }
+
+    filtered
+}
+
+fn build_fts_query(query: &str) -> String {
+    query_terms(query)
+        .into_iter()
+        .map(|term| format!("{}*", term))
         .collect::<Vec<_>>()
         .join(" OR ")
 }

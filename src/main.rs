@@ -2,6 +2,7 @@ mod config;
 mod context;
 mod db;
 mod dream;
+mod eval;
 mod init;
 mod llm;
 mod mcp;
@@ -100,6 +101,15 @@ enum Commands {
         /// Max number of relevant memories to include (default: 15)
         #[arg(short, long, default_value = "15")]
         limit: usize,
+    },
+    /// Evaluate memory retrieval/context quality against a fixed benchmark
+    Eval {
+        /// Benchmark fixture JSON path
+        #[arg(long, default_value = "eval/benchmark.json")]
+        fixture: PathBuf,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Start MCP stdio server
     Mcp,
@@ -419,6 +429,20 @@ async fn main() -> Result<()> {
                 limit,
             )?;
             println!("{}", ctx);
+        }
+        Commands::Eval { fixture, json } => {
+            let benchmark_path = if fixture.is_absolute() {
+                fixture
+            } else {
+                let base = cli.dir.unwrap_or(std::env::current_dir()?);
+                base.join(fixture)
+            };
+            let report = eval::run_benchmark_file(&benchmark_path)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", eval::format_report(&report));
+            }
         }
         Commands::Mcp => {
             let cortex_dir = find_cortex_dir(&cli.dir)?;
