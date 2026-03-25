@@ -34,8 +34,24 @@ PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
 } > "$LOG_FILE"
 
 set +e
-"$AGENT_BIN" chat -q "$PROMPT_CONTENT" >> "$LOG_FILE" 2>&1
-AGENT_EXIT=$?
+case "$(basename "$AGENT_BIN")" in
+  codex)
+    "$AGENT_BIN" exec --full-auto "$PROMPT_CONTENT" >> "$LOG_FILE" 2>&1
+    AGENT_EXIT=$?
+    ;;
+  claude|claude-code)
+    "$AGENT_BIN" -p "$PROMPT_CONTENT" >> "$LOG_FILE" 2>&1
+    AGENT_EXIT=$?
+    ;;
+  opencode)
+    "$AGENT_BIN" run "$PROMPT_CONTENT" >> "$LOG_FILE" 2>&1
+    AGENT_EXIT=$?
+    ;;
+  *)
+    "$AGENT_BIN" chat -q "$PROMPT_CONTENT" >> "$LOG_FILE" 2>&1
+    AGENT_EXIT=$?
+    ;;
+esac
 set -e
 
 if [[ $AGENT_EXIT -ne 0 ]]; then

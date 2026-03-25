@@ -237,8 +237,12 @@ DRY_RUN=1 bash autoresearch/autonomous_loop.sh 1
 # Run 5 real autonomous iterations with Hermes
 bash autoresearch/autonomous_loop.sh 5
 
-# Or use Codex instead of Hermes
+# Run with Codex (often better for unattended code-editing loops)
 AGENT_BIN=codex bash autoresearch/autonomous_loop.sh 5
+
+# Other supported binaries if installed
+AGENT_BIN=claude bash autoresearch/autonomous_loop.sh 5
+AGENT_BIN=opencode bash autoresearch/autonomous_loop.sh 5
 ```
 
 Suggested long unattended run:
