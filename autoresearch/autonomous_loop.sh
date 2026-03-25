@@ -8,6 +8,7 @@ ITERATIONS="${1:-5}"
 AGENT_BIN="${AGENT_BIN:-hermes}"
 SLEEP_SECS="${SLEEP_SECS:-2}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
+AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-240}"
 
 if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]]; then
   echo "usage: $0 [iterations]" >&2
@@ -27,7 +28,7 @@ for i in $(seq 1 "$ITERATIONS"); do
   TS="$(date +%Y%m%d-%H%M%S)"
   LOG_FILE="autoresearch/logs/iteration-$TS.log"
 
-  if ! AGENT_BIN="$AGENT_BIN" LOG_FILE="$LOG_FILE" ALLOW_DIRTY="$ALLOW_DIRTY" bash autoresearch/run_agent_iteration.sh; then
+  if ! AGENT_BIN="$AGENT_BIN" LOG_FILE="$LOG_FILE" ALLOW_DIRTY="$ALLOW_DIRTY" AGENT_TIMEOUT_SECS="$AGENT_TIMEOUT_SECS" bash autoresearch/run_agent_iteration.sh; then
     echo "iteration $i failed; see $LOG_FILE" >&2
     exit 1
   fi

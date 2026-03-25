@@ -36,6 +36,7 @@ Constraints:
 - Do not weaken existing benchmark expectations.
 - Benchmark hardening is allowed when the current metric is saturated, but only with realistic harder cases.
 - Prefer fixes in src/db.rs, src/context.rs, src/eval.rs, or src/sleep.rs.
+- Do not edit autoresearch runner infrastructure (`autoresearch/agent_prompt.md`, `autoresearch/run_agent_iteration.sh`, `autoresearch/autonomous_loop.sh`, `autoresearch/command_with_timeout.py`) during a normal product-improvement iteration.
 - Do not schedule cron jobs.
 - Do not use `python -c`, `python3 -c`, or heredoc python in terminal commands; those may trigger safety confirmation. Use existing scripts, read_file/search_files/patch, or normal cargo/bash commands instead.
 - Use `python3 autoresearch/score_compare.py autoresearch/baseline.json autoresearch/eval.json` for score comparison if needed.

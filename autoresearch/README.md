@@ -270,8 +270,10 @@ bash autoresearch/autonomous_loop.sh 5
 Notes:
 - the loop refuses to start on a dirty worktree unless you explicitly set `ALLOW_DIRTY=1`
 - each iteration computes a baseline, asks the agent for one focused change, reruns eval, and resets on flat/regressed outcomes
+- the agent subprocess is wrapped by `autoresearch/command_with_timeout.py` (`AGENT_TIMEOUT_SECS`, default `240`)
 - kept iterations are expected to create a real git commit
 - progress is refreshed via `autoresearch/progress.png` after each eval run
+- ignored scratch artifacts like baseline/eval json, logs, results.tsv, and progress.png are cleaned on discard or failure
 
 ## Resume checklist
 
