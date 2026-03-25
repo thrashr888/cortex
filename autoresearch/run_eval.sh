@@ -16,4 +16,7 @@ with open(path) as f:
 print(f"total_score\t{data['total_score']}")
 print(f"recall_score\t{data['recall_score']}")
 print(f"context_score\t{data['context_score']}")
+print(f"hillclimb_score\t{data['hillclimb_score']}")
 PY
+python3 autoresearch/render_progress.py >/tmp/cortex-progress-path.txt
+printf 'progress_png\t%s\n' "$(cat /tmp/cortex-progress-path.txt)"

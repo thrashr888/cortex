@@ -4,6 +4,55 @@ use rusqlite::Connection;
 use crate::db;
 use crate::models::{ConsolidatedMemory, Entity, Relationship, Skill, Stats};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeDecision {
+    KeepBoth,
+    ProjectOnly,
+    GlobalOnly,
+}
+
+pub fn scope_decision_for_query(
+    project_top: Option<(&str, &str)>,
+    global_top: Option<(&str, &str)>,
+    query: &str,
+) -> ScopeDecision {
+    if query.trim().is_empty() {
+        return ScopeDecision::KeepBoth;
+    }
+
+    let scoring_terms = scoring_terms(query);
+    let query_term_count = scoring_terms.len();
+    let project_strength = project_top
+        .map(|(content, _)| query_term_hits(content, &scoring_terms))
+        .unwrap_or(0);
+    let global_strength = global_top
+        .map(|(content, _)| query_term_hits(content, &scoring_terms))
+        .unwrap_or(0);
+    let project_score = project_top
+        .map(|(content, _)| text_match_score(content, &scoring_terms, query))
+        .unwrap_or(0);
+    let global_score = global_top
+        .map(|(content, _)| text_match_score(content, &scoring_terms, query))
+        .unwrap_or(0);
+    let preference_query = query_terms(query).iter().any(|term| is_routing_term(term));
+    let project_is_preference = project_top
+        .map(|(_, memory_type)| memory_type == "preference")
+        .unwrap_or(false);
+    let global_is_preference = global_top
+        .map(|(_, memory_type)| memory_type == "preference")
+        .unwrap_or(false);
+
+    if preference_query && global_is_preference && !project_is_preference && global_strength > 0 {
+        ScopeDecision::GlobalOnly
+    } else if global_score > project_score && project_strength < query_term_count {
+        ScopeDecision::GlobalOnly
+    } else if project_strength >= query_term_count && project_score > global_score {
+        ScopeDecision::ProjectOnly
+    } else {
+        ScopeDecision::KeepBoth
+    }
+}
+
 pub fn format_context(
     cons_conn: &Connection,
     raw_conn: &Connection,
@@ -44,22 +93,16 @@ pub fn format_context(
     };
 
     if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
-        let project_strength = consolidated
-            .first()
-            .map(|m| query_term_hits(&m.content, q))
-            .unwrap_or(0);
-        let global_strength = global_consolidated
-            .first()
-            .map(|m| query_term_hits(&m.content, q))
-            .unwrap_or(0);
-        let query_term_count = query_terms(q).len();
-        let preference_query = q.to_lowercase().contains("prefer");
-        if (global_strength > project_strength && project_strength < query_term_count)
-            || (preference_query && global_strength > 0)
-        {
-            consolidated.clear();
-        } else if project_strength >= query_term_count && project_strength > global_strength {
-            global_consolidated.clear();
+        match scope_decision_for_query(
+            consolidated.first().map(|m| (m.content.as_str(), m.r#type.as_str())),
+            global_consolidated
+                .first()
+                .map(|m| (m.content.as_str(), m.r#type.as_str())),
+            q,
+        ) {
+            ScopeDecision::ProjectOnly => global_consolidated.clear(),
+            ScopeDecision::GlobalOnly => consolidated.clear(),
+            ScopeDecision::KeepBoth => {}
         }
     }
 
@@ -189,24 +232,74 @@ fn format_full(
 }
 
 fn query_terms(query: &str) -> Vec<String> {
-    query
-        .split_whitespace()
-        .map(|word| {
-            word.chars()
+    let mut terms = Vec::new();
+    for word in query.split_whitespace() {
+        let normalized = normalize_query_term(
+            &word
+                .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                 .collect::<String>()
-                .to_lowercase()
-        })
-        .filter(|term| !term.is_empty())
-        .collect()
+                .to_lowercase(),
+        );
+        push_query_term(&mut terms, normalized.clone());
+        if normalized.contains('-') {
+            for piece in normalized.split('-') {
+                push_query_term(&mut terms, normalize_query_term(piece));
+            }
+        }
+    }
+    terms
 }
 
-fn query_term_hits(text: &str, query: &str) -> usize {
-    let lower = text.to_lowercase();
-    query_terms(query)
+fn push_query_term(terms: &mut Vec<String>, term: String) {
+    if !term.is_empty() && !terms.contains(&term) {
+        terms.push(term);
+    }
+}
+
+fn normalize_query_term(term: &str) -> String {
+    match term {
+        "prefer" | "prefers" | "preferred" | "preference" | "preferences" => "prefer".to_string(),
+        _ if term.ends_with("ies") && term.len() > 4 => format!("{}y", &term[..term.len() - 3]),
+        _ if term.ends_with('s') && term.len() > 4 && !term.ends_with("ss") => {
+            term[..term.len() - 1].to_string()
+        }
+        _ => term.to_string(),
+    }
+}
+
+fn is_routing_term(term: &str) -> bool {
+    matches!(term, "prefer")
+}
+
+fn scoring_terms(query: &str) -> Vec<String> {
+    let terms = query_terms(query);
+    let informative: Vec<String> = terms
         .iter()
-        .filter(|term| lower.contains(term.as_str()))
-        .count()
+        .filter(|term| !is_routing_term(term) && !term.contains('-'))
+        .cloned()
+        .collect();
+    if informative.is_empty() {
+        terms.into_iter().filter(|term| !is_routing_term(term)).collect()
+    } else {
+        informative
+    }
+}
+
+fn text_match_score(text: &str, terms: &[String], full_query: &str) -> usize {
+    let lower = text.to_lowercase();
+    let term_hits = terms.iter().filter(|term| lower.contains(term.as_str())).count();
+    let phrase_bonus = if !full_query.trim().is_empty() && lower.contains(&full_query.to_lowercase()) {
+        1
+    } else {
+        0
+    };
+    term_hits * 10 + phrase_bonus
+}
+
+fn query_term_hits(text: &str, terms: &[String]) -> usize {
+    let lower = text.to_lowercase();
+    terms.iter().filter(|term| lower.contains(term.as_str())).count()
 }
 
 fn format_compact(

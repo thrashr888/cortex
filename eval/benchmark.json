@@ -194,6 +194,66 @@
       "forbidden_context_substrings": ["avatar lookups"]
     },
     {
+      "name": "entity recall should suppress neighbor-only distractor",
+      "query": "UserList",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "userlist_eager",
+          "content": "Always use eager loading for UserList queries to avoid N+1 fetches.",
+          "type": "pattern",
+          "entities": [
+            {"name": "UserList", "type": "service"},
+            {"name": "ActivityFeed", "type": "service"}
+          ],
+          "relationships": [
+            {"source": "UserList", "target": "ActivityFeed", "type": "related_to"}
+          ]
+        },
+        {
+          "key": "activityfeed_batch",
+          "content": "ActivityFeed background batches should flush every 15 seconds to reduce queue churn.",
+          "type": "pattern",
+          "entities": [
+            {"name": "ActivityFeed", "type": "service"}
+          ]
+        }
+      ],
+      "expected_project_keys": ["userlist_eager"],
+      "disallowed_project_keys": ["activityfeed_batch"],
+      "required_context_substrings": ["eager loading for UserList queries"],
+      "forbidden_context_substrings": ["background batches should flush every 15 seconds"]
+    },
+    {
+      "name": "entity recall should rank concise canonical hit above equally matched distractor",
+      "query": "UserList eager",
+      "limit": 1,
+      "project_memories": [
+        {
+          "key": "userlist_eager_queries",
+          "content": "UserList eager loading should stay enabled for query paths to avoid N+1 reads.",
+          "type": "pattern",
+          "confidence": 1.0,
+          "entities": [
+            {"name": "UserList", "type": "service"}
+          ]
+        },
+        {
+          "key": "userlist_eager_tests",
+          "content": "UserList eager test fixtures should stay tiny to keep snapshots readable.",
+          "type": "pattern",
+          "confidence": 0.4,
+          "entities": [
+            {"name": "UserList", "type": "service"}
+          ]
+        }
+      ],
+      "expected_project_keys": ["userlist_eager_queries"],
+      "disallowed_project_keys": ["userlist_eager_tests"],
+      "required_context_substrings": ["query paths to avoid N+1 reads"],
+      "forbidden_context_substrings": ["test fixtures should stay tiny"]
+    },
+    {
       "name": "context should stay project-scoped when globals do not match",
       "query": "upload retry backoff",
       "limit": 3,
@@ -245,6 +305,75 @@
       "forbidden_context_substrings": ["Global Knowledge", "concise terminal tooling"]
     },
     {
+      "name": "domain-specific preference query should not surface generic global preference",
+      "query": "prefer upload retries",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "upload_retry_pref",
+          "content": "For uploads, prefer a 5 second retry cap with resumable chunked retries.",
+          "type": "preference",
+          "confidence": 1.0
+        }
+      ],
+      "global_memories": [
+        {
+          "key": "generic_pref",
+          "content": "I prefer Rust and Go for CLI tools.",
+          "type": "preference",
+          "confidence": 1.0
+        }
+      ],
+      "expected_project_keys": ["upload_retry_pref"],
+      "disallowed_global_keys": ["generic_pref"],
+      "required_context_substrings": ["prefer a 5 second retry cap"],
+      "forbidden_context_substrings": ["Global Knowledge", "Rust and Go for CLI tools."]
+    },
+    {
+      "name": "hyphenated query should match spaced canonical phrase",
+      "query": "temp-file writer",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "temp_file_writer_lock",
+          "content": "Fixed race condition in upload handler by locking the temp file writer.",
+          "type": "bugfix",
+          "confidence": 1.0
+        },
+        {
+          "key": "temp_file_preview_writer",
+          "content": "Writer used for temp-file previews now rotates logs before reconnect.",
+          "type": "bugfix",
+          "confidence": 0.4
+        }
+      ],
+      "expected_project_keys": ["temp_file_writer_lock"],
+      "disallowed_project_keys": ["temp_file_preview_writer"],
+      "required_context_substrings": ["locking the temp file writer"],
+      "forbidden_context_substrings": ["temp-file previews now rotates logs"]
+    },
+    {
+      "name": "morphology-aware retrieval should prefer canonical retry memory",
+      "query": "upload retries 503",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "retry_503",
+          "content": "Uploads should retry with exponential jitter after transient 503 responses.",
+          "type": "pattern"
+        },
+        {
+          "key": "ui_retries",
+          "content": "Upload progress UI retries animation frames after reconnect.",
+          "type": "bugfix"
+        }
+      ],
+      "expected_project_keys": ["retry_503"],
+      "disallowed_project_keys": ["ui_retries"],
+      "required_context_substrings": ["retry with exponential jitter after transient 503 responses"],
+      "forbidden_context_substrings": ["retries animation frames after reconnect"]
+    },
+    {
       "name": "near-match global distractor should stay out of project context",
       "query": "upload retry cap",
       "limit": 3,
@@ -267,6 +396,31 @@
       "expected_project_keys": ["upload_cap"],
       "required_context_substrings": ["Upload retry cap should stay at 5 seconds"],
       "forbidden_context_substrings": ["Global Knowledge", "30 seconds for long-running sync jobs"]
+    },
+    {
+      "name": "exact project phrase should beat same-term global distractor",
+      "query": "upload retry cap",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "upload_cap_exact",
+          "content": "Upload retry cap should stay at 5 seconds to preserve snappy UX.",
+          "type": "decision",
+          "confidence": 1.0
+        }
+      ],
+      "global_memories": [
+        {
+          "key": "upload_cap_loose_global",
+          "content": "Uploads have retry and cap rules, but long sync jobs can stretch cap windows to 30 seconds.",
+          "type": "decision",
+          "confidence": 1.0
+        }
+      ],
+      "expected_project_keys": ["upload_cap_exact"],
+      "disallowed_global_keys": ["upload_cap_loose_global"],
+      "required_context_substrings": ["Upload retry cap should stay at 5 seconds"],
+      "forbidden_context_substrings": ["Global Knowledge", "stretch cap windows to 30 seconds"]
     }
   ]
 }

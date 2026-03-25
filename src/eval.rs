@@ -2,9 +2,13 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::models::Memory;
 use crate::{context, db};
+
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Benchmark {
@@ -75,6 +79,7 @@ pub struct BenchmarkReport {
     pub total_score: f64,
     pub recall_score: f64,
     pub context_score: f64,
+    pub hillclimb_score: f64,
     pub case_reports: Vec<CaseReport>,
 }
 
@@ -84,6 +89,7 @@ pub struct CaseReport {
     pub score: f64,
     pub recall_score: f64,
     pub context_score: f64,
+    pub hillclimb_score: f64,
     pub retrieved_project_keys: Vec<String>,
     pub retrieved_global_keys: Vec<String>,
     pub missing_required_context: Vec<String>,
@@ -128,6 +134,7 @@ pub fn format_report(report: &BenchmarkReport) -> String {
     out.push_str(&format!("total_score: {:.2}\n", report.total_score));
     out.push_str(&format!("recall_score: {:.2}\n", report.recall_score));
     out.push_str(&format!("context_score: {:.2}\n", report.context_score));
+    out.push_str(&format!("hillclimb_score: {:.2}\n", report.hillclimb_score));
     out.push('\n');
 
     for case in &report.case_reports {
@@ -135,6 +142,7 @@ pub fn format_report(report: &BenchmarkReport) -> String {
         out.push_str(&format!("  score: {:.2}\n", case.score));
         out.push_str(&format!("  recall: {:.2}\n", case.recall_score));
         out.push_str(&format!("  context: {:.2}\n", case.context_score));
+        out.push_str(&format!("  hillclimb: {:.2}\n", case.hillclimb_score));
         if !case.retrieved_project_keys.is_empty() {
             out.push_str(&format!(
                 "  project_hits: {}\n",
@@ -173,12 +181,14 @@ fn run_benchmark(benchmark: &Benchmark) -> Result<BenchmarkReport> {
     let total_score = average(case_reports.iter().map(|c| c.score));
     let recall_score = average(case_reports.iter().map(|c| c.recall_score));
     let context_score = average(case_reports.iter().map(|c| c.context_score));
+    let hillclimb_score = round2(case_reports.iter().map(|c| c.hillclimb_score).sum());
 
     Ok(BenchmarkReport {
         benchmark: benchmark.name.clone(),
         total_score,
         recall_score,
         context_score,
+        hillclimb_score,
         case_reports,
     })
 }
@@ -217,6 +227,19 @@ fn run_case(case: &BenchmarkCase) -> Result<CaseReport> {
     )?;
     let (context_score, missing_required_context, present_forbidden_context) =
         score_context(&rendered_context, &case.required_context_substrings, &case.forbidden_context_substrings);
+    let hillclimb_score = score_hillclimb_case(
+        &retrieved.project_keys,
+        &retrieved.global_keys,
+        &rendered_context,
+        RecallExpectations {
+            expected_project: &case.expected_project_keys,
+            expected_global: &case.expected_global_keys,
+            disallowed_project: &case.disallowed_project_keys,
+            disallowed_global: &case.disallowed_global_keys,
+        },
+        &case.required_context_substrings,
+        &case.forbidden_context_substrings,
+    );
 
     let score = round2((recall_score * 0.65) + (context_score * 0.35));
 
@@ -225,6 +248,7 @@ fn run_case(case: &BenchmarkCase) -> Result<CaseReport> {
         score,
         recall_score,
         context_score,
+        hillclimb_score,
         retrieved_project_keys: retrieved.project_keys,
         retrieved_global_keys: retrieved.global_keys,
         missing_required_context,
@@ -240,6 +264,7 @@ fn seed_memories(
 ) -> Result<()> {
     for memory in memories {
         let raw_id = db::save_memory(raw_conn, &memory.content, &memory.memory_type, "eval")?;
+        db::update_memory_importance(raw_conn, raw_id, memory.confidence)?;
         let mut entity_ids = Vec::new();
         let mut entity_name_to_id = HashMap::new();
         for entity in &memory.entities {
@@ -312,18 +337,34 @@ fn retrieve_keys(
     if project_memories.is_empty() {
         project_memories = db::recall_memories(raw_conn, query, limit)?;
     }
+
+    let mut global_memories = match global_cons {
+        Some(conn) => db::search_consolidated(conn, query, limit)?,
+        None => Vec::new(),
+    };
+
+    match context::scope_decision_for_query(
+        project_memories
+            .first()
+            .map(|memory: &Memory| (memory.content.as_str(), memory.r#type.as_str())),
+        global_memories
+            .first()
+            .map(|memory| (memory.content.as_str(), memory.r#type.as_str())),
+        query,
+    ) {
+        context::ScopeDecision::ProjectOnly => global_memories.clear(),
+        context::ScopeDecision::GlobalOnly => project_memories.clear(),
+        context::ScopeDecision::KeepBoth => {}
+    }
+
     let project_keys = project_memories
         .iter()
         .filter_map(|m| project_lookup.get(&m.id).cloned())
         .collect();
-
-    let global_keys = match global_cons {
-        Some(conn) => db::search_consolidated(conn, query, limit)?
-            .into_iter()
-            .filter_map(|m| global_lookup.get(&m.id).cloned())
-            .collect(),
-        None => Vec::new(),
-    };
+    let global_keys = global_memories
+        .into_iter()
+        .filter_map(|m| global_lookup.get(&m.id).cloned())
+        .collect();
 
     Ok(RetrievalOutcome {
         project_keys,
@@ -466,6 +507,106 @@ fn rank_score(retrieved_keys: &[String], expected_keys: &[String]) -> f64 {
     round2(100.0 * total / expected_keys.len() as f64)
 }
 
+fn score_hillclimb_case(
+    retrieved_project_keys: &[String],
+    retrieved_global_keys: &[String],
+    rendered_context: &str,
+    expectations: RecallExpectations<'_>,
+    required_context_substrings: &[String],
+    forbidden_context_substrings: &[String],
+) -> f64 {
+    let project_ndcg = ndcg_score(retrieved_project_keys, expectations.expected_project);
+    let global_ndcg = ndcg_score(retrieved_global_keys, expectations.expected_global);
+    let context_coverage = context_coverage_score(rendered_context, required_context_substrings);
+    let context_cleanliness = context_cleanliness_score(rendered_context, forbidden_context_substrings);
+    let retrieval_noise = count_unexpected_hits(retrieved_project_keys, expectations.expected_project)
+        + count_unexpected_hits(retrieved_global_keys, expectations.expected_global);
+    let disallowed_hits = count_disallowed_hits(retrieved_project_keys, expectations.disallowed_project)
+        + count_disallowed_hits(retrieved_global_keys, expectations.disallowed_global);
+    let extra_context_lines = extra_context_lines(rendered_context, required_context_substrings.len());
+
+    round2(
+        (project_ndcg * 8.0)
+            + (global_ndcg * 5.0)
+            + (context_coverage * 4.0)
+            + (context_cleanliness * 3.0)
+            - (retrieval_noise as f64 * 1.25)
+            - (disallowed_hits as f64 * 2.0)
+            - (extra_context_lines as f64 * 0.2),
+    )
+}
+
+fn ndcg_score(retrieved_keys: &[String], expected_keys: &[String]) -> f64 {
+    if expected_keys.is_empty() {
+        return 1.0;
+    }
+
+    let dcg = expected_keys
+        .iter()
+        .filter_map(|expected| retrieved_keys.iter().position(|actual| actual == expected))
+        .map(|index| 1.0 / ((index + 2) as f64).log2())
+        .sum::<f64>();
+    let idcg = (0..expected_keys.len())
+        .map(|index| 1.0 / ((index + 2) as f64).log2())
+        .sum::<f64>();
+
+    if idcg == 0.0 {
+        0.0
+    } else {
+        dcg / idcg
+    }
+}
+
+fn context_coverage_score(rendered_context: &str, required_context_substrings: &[String]) -> f64 {
+    if required_context_substrings.is_empty() {
+        return 1.0;
+    }
+    let rendered_lower = rendered_context.to_lowercase();
+    let covered = required_context_substrings
+        .iter()
+        .filter(|needle| rendered_lower.contains(&needle.to_lowercase()))
+        .count();
+    covered as f64 / required_context_substrings.len() as f64
+}
+
+fn context_cleanliness_score(rendered_context: &str, forbidden_context_substrings: &[String]) -> f64 {
+    if forbidden_context_substrings.is_empty() {
+        return 1.0;
+    }
+    let rendered_lower = rendered_context.to_lowercase();
+    let forbidden_hits = forbidden_context_substrings
+        .iter()
+        .filter(|needle| rendered_lower.contains(&needle.to_lowercase()))
+        .count();
+    (1.0 - (forbidden_hits as f64 / forbidden_context_substrings.len() as f64)).max(0.0)
+}
+
+fn count_unexpected_hits(retrieved_keys: &[String], expected_keys: &[String]) -> usize {
+    let expected: std::collections::HashSet<&str> = expected_keys.iter().map(|key| key.as_str()).collect();
+    retrieved_keys
+        .iter()
+        .filter(|key| !expected.contains(key.as_str()))
+        .count()
+}
+
+fn count_disallowed_hits(retrieved_keys: &[String], disallowed_keys: &[String]) -> usize {
+    let disallowed: std::collections::HashSet<&str> =
+        disallowed_keys.iter().map(|key| key.as_str()).collect();
+    retrieved_keys
+        .iter()
+        .filter(|key| disallowed.contains(key.as_str()))
+        .count()
+}
+
+fn extra_context_lines(rendered_context: &str, expected_required_count: usize) -> usize {
+    let informative_lines = rendered_context
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("- ["))
+        .count();
+    informative_lines.saturating_sub(expected_required_count.max(1))
+}
+
 fn average(values: impl Iterator<Item = f64>) -> f64 {
     let collected: Vec<f64> = values.collect();
     if collected.is_empty() {
@@ -484,12 +625,18 @@ struct ScratchSpace {
     global_dir: PathBuf,
 }
 
+fn unique_nonce() -> Result<String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock before unix epoch")?
+        .as_nanos();
+    let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(format!("{now}-{counter}"))
+}
+
 impl ScratchSpace {
     fn new() -> Result<Self> {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system clock before unix epoch")?
-            .as_nanos();
+        let nonce = unique_nonce()?;
         let root = std::env::temp_dir().join(format!("cortex-eval-run-{nonce}"));
         let project_dir = root.join("project");
         let global_dir = root.join("global");
@@ -514,13 +661,9 @@ impl Drop for ScratchSpace {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn write_fixture(contents: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nonce = unique_nonce().unwrap();
         let dir = std::env::temp_dir().join(format!("cortex-eval-{nonce}"));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("benchmark.json");
@@ -816,6 +959,55 @@ mod tests {
     }
 
     #[test]
+    fn domain_specific_preference_query_should_not_surface_generic_global_preference() {
+        let scratch = ScratchSpace::new().unwrap();
+        let raw_conn = db::open_raw_db(&scratch.project_dir.join("raw.db")).unwrap();
+        let cons_conn = db::open_consolidated_db(&scratch.project_dir.join("consolidated.db")).unwrap();
+        let global_cons = db::open_consolidated_db(&scratch.global_dir.join("consolidated.db")).unwrap();
+
+        let raw_id = db::save_memory(
+            &raw_conn,
+            "For uploads, prefer a 5 second retry cap with resumable chunked retries.",
+            "preference",
+            "eval",
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &cons_conn,
+            "For uploads, prefer a 5 second retry cap with resumable chunked retries.",
+            "preference",
+            &[raw_id],
+            1.0,
+        )
+        .unwrap();
+        db::insert_consolidated(
+            &global_cons,
+            "I prefer Rust and Go for CLI tools.",
+            "preference",
+            &[],
+            1.0,
+        )
+        .unwrap();
+
+        let global_hits = db::search_consolidated(&global_cons, "prefer upload retries", 3).unwrap();
+        assert!(global_hits.is_empty(), "global_hits={global_hits:#?}");
+
+        let ctx = context::format_context(
+            &cons_conn,
+            &raw_conn,
+            Some(&global_cons),
+            false,
+            Some("prefer upload retries"),
+            3,
+        )
+        .unwrap();
+
+        assert!(ctx.contains("prefer a 5 second retry cap"), "ctx={ctx}");
+        assert!(!ctx.contains("Global Knowledge"), "ctx={ctx}");
+        assert!(!ctx.contains("Rust and Go for CLI tools"), "ctx={ctx}");
+    }
+
+    #[test]
     fn near_match_global_distractor_should_stay_out_of_project_context() {
         let scratch = ScratchSpace::new().unwrap();
         let raw_conn = db::open_raw_db(&scratch.project_dir.join("raw.db")).unwrap();
@@ -859,6 +1051,183 @@ mod tests {
         assert!(ctx.contains("Upload retry cap should stay at 5 seconds"), "ctx={ctx}");
         assert!(!ctx.contains("Global Knowledge"), "ctx={ctx}");
         assert!(!ctx.contains("30 seconds for long-running sync jobs"), "ctx={ctx}");
+    }
+
+    #[test]
+    fn hillclimb_score_penalizes_noise_and_rewards_tighter_rankings() {
+        let precise = score_hillclimb_case(
+            &["upload_fix".to_string()],
+            &[],
+            "### Learned Patterns\n- [bugfix] Fixed race condition in upload handler by locking the temp file writer.\n",
+            RecallExpectations {
+                expected_project: &["upload_fix".to_string()],
+                ..Default::default()
+            },
+            &["race condition in upload handler".to_string()],
+            &[],
+        );
+        let noisy = score_hillclimb_case(
+            &["upload_fix".to_string(), "upload_perf".to_string(), "ui_race".to_string()],
+            &[],
+            "### Learned Patterns\n- [bugfix] Fixed race condition in upload handler by locking the temp file writer.\n- [pattern] Upload throughput improved after increasing worker count and removing lock contention in the preview generator.\n- [bugfix] A UI race appears when the upload progress component rerenders during reconnect.\n",
+            RecallExpectations {
+                expected_project: &["upload_fix".to_string()],
+                ..Default::default()
+            },
+            &["race condition in upload handler".to_string()],
+            &["preview generator".to_string(), "upload progress component".to_string()],
+        );
+
+        assert!(precise > noisy, "precise={precise}, noisy={noisy}");
+    }
+
+    #[test]
+    fn entity_recall_case_suppresses_neighbor_only_distractor() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        let case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "entity recall should suppress neighbor-only distractor")
+            .unwrap();
+        assert_eq!(case.retrieved_project_keys, vec!["userlist_eager".to_string()]);
+        assert!(case.present_forbidden_context.is_empty(), "unexpected case: {case:#?}");
+    }
+
+    #[test]
+    fn morphology_aware_retrieval_prefers_canonical_retry_memory() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        let case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "morphology-aware retrieval should prefer canonical retry memory")
+            .unwrap();
+        assert_eq!(
+            case.retrieved_project_keys,
+            vec!["retry_503".to_string()],
+            "unexpected case: {case:#?}"
+        );
+        assert!(case.present_forbidden_context.is_empty(), "unexpected case: {case:#?}");
+    }
+
+    #[test]
+    fn entity_recall_should_rank_concise_canonical_hit_above_equally_matched_distractor() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        let case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "entity recall should rank concise canonical hit above equally matched distractor")
+            .unwrap();
+        assert_eq!(
+            case.retrieved_project_keys,
+            vec!["userlist_eager_queries".to_string()],
+            "unexpected case: {case:#?}"
+        );
+        assert!(case.present_forbidden_context.is_empty(), "unexpected case: {case:#?}");
+    }
+
+    #[test]
+    fn hyphenated_query_matches_spaced_canonical_phrase() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        let case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "hyphenated query should match spaced canonical phrase")
+            .unwrap();
+        assert_eq!(case.retrieved_project_keys, vec!["temp_file_writer_lock".to_string()]);
+        assert!(case.present_forbidden_context.is_empty(), "unexpected case: {case:#?}");
+    }
+
+    #[test]
+    fn morphology_case_prefers_canonical_retry_memory() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        let case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "morphology-aware retrieval should prefer canonical retry memory")
+            .unwrap();
+        assert_eq!(case.retrieved_project_keys, vec!["retry_503".to_string()]);
+        assert!(case.present_forbidden_context.is_empty(), "unexpected case: {case:#?}");
+    }
+
+    #[test]
+    fn benchmark_retrieval_aligns_with_context_routing() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+
+        let global_pref_case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "global preference recall with project distractor")
+            .unwrap();
+        assert!(
+            global_pref_case.retrieved_project_keys.is_empty(),
+            "unexpected case: {global_pref_case:#?}"
+        );
+
+        let near_match_case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "near-match global distractor should stay out of project context")
+            .unwrap();
+        assert!(
+            near_match_case.retrieved_global_keys.is_empty(),
+            "unexpected case: {near_match_case:#?}"
+        );
+    }
+
+    #[test]
+    fn exact_project_phrase_should_beat_same_term_global_distractor() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        let case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "exact project phrase should beat same-term global distractor")
+            .unwrap();
+        assert_eq!(
+            case.retrieved_project_keys,
+            vec!["upload_cap_exact".to_string()]
+        );
+        assert!(
+            case.retrieved_global_keys.is_empty(),
+            "unexpected case: {case:#?}"
+        );
+        assert!(
+            case.present_forbidden_context.is_empty(),
+            "unexpected case: {case:#?}"
+        );
+    }
+
+    #[test]
+    fn benchmark_report_includes_hillclimb_score() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        assert!(report.hillclimb_score > 0.0, "unexpected report: {report:#?}");
+        assert!(
+            report.case_reports.iter().all(|case| case.hillclimb_score > 0.0),
+            "unexpected report: {report:#?}"
+        );
     }
 
     #[test]

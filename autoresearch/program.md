@@ -10,11 +10,15 @@ You may edit:
 - `src/context.rs`
 - `src/sleep.rs`
 - `src/eval.rs`
-- `eval/benchmark.json` only if the human explicitly asks to expand or fix the benchmark
+- `eval/benchmark.json` for realistic benchmark hardening when the current gate or hill-climb metric saturates
+- `autoresearch/README.md`
+- `autoresearch/results.tsv`
+- `autoresearch/run_eval.sh`
+- `autoresearch/render_progress.py`
 
 Do not edit unrelated files unless required to make the benchmark runnable.
 
-## Primary metric
+## Metrics
 
 Run:
 
@@ -22,11 +26,14 @@ Run:
 cargo run -- eval --json
 ```
 
-The objective is to maximize `total_score`.
-Higher is better.
-The benchmark now includes distractor-heavy retrieval, trace-derived preference ranking, and contradiction-resolution cases.
+Optimize with a two-level objective:
+1. primary regression gate: maximize `total_score`
+2. secondary hill-climb target: maximize `hillclimb_score` when `total_score` is unchanged
 
-Treat the benchmark as fixed. Do not overfit by deleting difficult cases or weakening expectations without human approval.
+Higher is better for both.
+The benchmark now includes distractor-heavy retrieval, trace-derived preference ranking, contradiction-resolution cases, and harder ranking/routing edge cases.
+
+Benchmark hardening is explicitly allowed in this repo when either metric saturates. Add harder realistic cases rather than weakening existing expectations.
 
 ## Setup
 
@@ -53,10 +60,16 @@ cargo test
 autoresearch/run_eval.sh autoresearch/eval.json
 ```
 
-5. Extract scores from `autoresearch/eval.json`.
-6. Log a row to `autoresearch/results.tsv`.
-7. If `total_score` improved, keep the commit.
-8. If `total_score` regressed or stayed flat without a clear simplification win, revert.
+5. Extract scores from `autoresearch/eval.json` and inspect low-scoring or newly added hard cases.
+6. Log a row to `autoresearch/results.tsv` and ensure `autoresearch/progress.png` was regenerated.
+7. Keep a change if:
+   - `total_score` improved, or
+   - `total_score` stayed the same and `hillclimb_score` improved, or
+   - scores stayed the same but the logic is clearly simpler and you explain why.
+8. Revert a change if:
+   - `total_score` regressed, or
+   - `total_score` stayed flat and `hillclimb_score` regressed, or
+   - both stayed flat with no compelling simplification win.
 
 ## Guardrails
 

@@ -187,6 +187,14 @@ pub fn update_memory_entities(conn: &Connection, id: i64, entity_ids: &[i64]) ->
     Ok(())
 }
 
+pub fn update_memory_importance(conn: &Connection, id: i64, importance: f64) -> Result<()> {
+    conn.execute(
+        "UPDATE memories SET importance = ?1 WHERE id = ?2",
+        params![importance, id],
+    )?;
+    Ok(())
+}
+
 pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Memory>> {
     let fts_query = build_fts_query(query);
     if fts_query.is_empty() {
@@ -305,7 +313,8 @@ pub fn recall_by_entity(conn: &Connection, entity_name: &str, include_neighbors:
         })
     })?;
 
-    rows.into_iter().map(|r| Ok(r?)).collect()
+    let memories: Vec<Memory> = rows.into_iter().map(|r| Ok(r?)).collect::<Result<_>>()?;
+    Ok(focus_memory_results(memories, entity_name, limit))
 }
 
 pub fn get_unconsolidated_count(conn: &Connection) -> Result<i64> {
@@ -734,27 +743,95 @@ fn candidate_limit(limit: usize) -> usize {
 }
 
 fn query_terms(query: &str) -> Vec<String> {
-    query
-        .split_whitespace()
-        .map(|word| {
-            word.chars()
+    let mut terms = Vec::new();
+    for word in query.split_whitespace() {
+        let normalized = normalize_query_term(
+            &word
+                .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
                 .collect::<String>()
-                .to_lowercase()
-        })
-        .filter(|term| !term.is_empty())
-        .collect()
+                .to_lowercase(),
+        );
+        push_query_term(&mut terms, normalized.clone());
+        if normalized.contains('-') {
+            for piece in normalized.split('-') {
+                push_query_term(&mut terms, normalize_query_term(piece));
+            }
+        }
+    }
+    terms
+}
+
+fn push_query_term(terms: &mut Vec<String>, term: String) {
+    if !term.is_empty() && !terms.contains(&term) {
+        terms.push(term);
+    }
+}
+
+fn normalize_query_term(term: &str) -> String {
+    match term {
+        "prefer" | "prefers" | "preferred" | "preference" | "preferences" => "prefer".to_string(),
+        _ if term.ends_with("ies") && term.len() > 4 => format!("{}y", &term[..term.len() - 3]),
+        _ if term.ends_with('s') && term.len() > 4 && !term.ends_with("ss") => {
+            term[..term.len() - 1].to_string()
+        }
+        _ => term.to_string(),
+    }
+}
+
+fn is_routing_term(term: &str) -> bool {
+    matches!(term, "prefer")
+}
+
+fn scoring_terms(query: &str) -> Vec<String> {
+    let terms = query_terms(query);
+    let informative: Vec<String> = terms
+        .iter()
+        .filter(|term| !is_routing_term(term) && !term.contains('-'))
+        .cloned()
+        .collect();
+    if informative.is_empty() {
+        terms.into_iter().filter(|term| !is_routing_term(term)).collect()
+    } else {
+        informative
+    }
 }
 
 fn text_match_score(text: &str, terms: &[String], full_query: &str) -> usize {
     let lower = text.to_lowercase();
     let term_hits = terms.iter().filter(|term| lower.contains(term.as_str())).count();
-    let phrase_bonus = if !full_query.trim().is_empty() && lower.contains(&full_query.to_lowercase()) {
+    let literal_phrase_bonus = if !full_query.trim().is_empty() && lower.contains(&full_query.to_lowercase()) {
         1
     } else {
         0
     };
-    term_hits * 10 + phrase_bonus
+    let normalized_query = normalize_phrase(full_query);
+    let normalized_text = normalize_phrase(text);
+    let normalized_phrase_bonus = if !normalized_query.is_empty() && normalized_text.contains(&normalized_query) {
+        2
+    } else {
+        0
+    };
+    term_hits * 10 + literal_phrase_bonus + normalized_phrase_bonus
+}
+
+fn normalize_phrase(text: &str) -> String {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .filter(|part| !part.is_empty())
+        .flat_map(|part| {
+            let normalized = normalize_query_term(&part.to_lowercase());
+            if normalized.contains('-') {
+                normalized
+                    .split('-')
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            } else {
+                vec![normalized]
+            }
+        })
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn query_term_hits(text: &str, terms: &[String]) -> usize {
@@ -786,7 +863,9 @@ fn content_tokens(text: &str) -> std::collections::HashSet<String> {
 }
 
 fn minimum_match_score(top_score: usize) -> usize {
-    if top_score <= 10 {
+    if top_score >= 30 {
+        top_score
+    } else if top_score <= 10 {
         top_score
     } else {
         ((top_score / 10) * 3).div_ceil(4) * 10
@@ -798,19 +877,24 @@ fn focus_memory_results(memories: Vec<Memory>, query: &str, limit: usize) -> Vec
         return memories;
     }
 
-    let terms = query_terms(query);
+    let terms = scoring_terms(query);
     if terms.is_empty() {
         return memories.into_iter().take(limit).collect();
     }
 
-    let mut scored: Vec<(usize, i64, Memory)> = memories
+    let mut scored: Vec<(usize, f64, i64, i64, Memory)> = memories
         .into_iter()
         .map(|memory| {
             let score = text_match_score(&memory.content, &terms, query);
-            (score, memory.id, memory)
+            (score, memory.importance, memory.access_count, memory.id, memory)
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.3.cmp(&a.3))
+    });
 
     let top_score = scored.first().map(|entry| entry.0).unwrap_or(0);
     if top_score == 0 {
@@ -818,7 +902,7 @@ fn focus_memory_results(memories: Vec<Memory>, query: &str, limit: usize) -> Vec
     }
     let min_score = minimum_match_score(top_score);
     let mut selected: Vec<Memory> = Vec::new();
-    for (score, _id, memory) in scored {
+    for (score, _importance, _access_count, _id, memory) in scored {
         if score < min_score {
             continue;
         }
@@ -846,7 +930,7 @@ fn focus_consolidated_results(
         return memories;
     }
 
-    let terms = query_terms(query);
+    let terms = scoring_terms(query);
     if terms.is_empty() {
         return memories.into_iter().take(limit).collect();
     }
@@ -929,7 +1013,20 @@ where
 }
 
 fn build_fts_query(query: &str) -> String {
-    query_terms(query)
+    let mut fts_terms = Vec::new();
+    for term in query_terms(query) {
+        if term.contains('-') {
+            for piece in term.split('-') {
+                if !piece.is_empty() && !fts_terms.contains(&piece.to_string()) {
+                    fts_terms.push(piece.to_string());
+                }
+            }
+        } else if !fts_terms.contains(&term) {
+            fts_terms.push(term);
+        }
+    }
+
+    fts_terms
         .into_iter()
         .map(|term| format!("{}*", term))
         .collect::<Vec<_>>()
