@@ -28,13 +28,22 @@ for i in $(seq 1 "$ITERATIONS"); do
   TS="$(date +%Y%m%d-%H%M%S)"
   LOG_FILE="autoresearch/logs/iteration-$TS.log"
 
-  if ! AGENT_BIN="$AGENT_BIN" LOG_FILE="$LOG_FILE" ALLOW_DIRTY="$ALLOW_DIRTY" AGENT_TIMEOUT_SECS="$AGENT_TIMEOUT_SECS" bash autoresearch/run_agent_iteration.sh; then
-    echo "iteration $i failed; see $LOG_FILE" >&2
+  set +e
+  AGENT_BIN="$AGENT_BIN" LOG_FILE="$LOG_FILE" ALLOW_DIRTY="$ALLOW_DIRTY" AGENT_TIMEOUT_SECS="$AGENT_TIMEOUT_SECS" bash autoresearch/run_agent_iteration.sh
+  ITER_EXIT=$?
+  set -e
+
+  if [[ "$ITER_EXIT" -ne 0 && "$ITER_EXIT" -ne 124 ]]; then
+    echo "iteration $i failed with exit $ITER_EXIT; see $LOG_FILE" >&2
     exit 1
   fi
 
   END_HEAD="$(git rev-parse --short HEAD)"
-  echo "iteration $i complete: $START_HEAD -> $END_HEAD"
+  if [[ "$ITER_EXIT" -eq 124 ]]; then
+    echo "iteration $i timed out and was reset: $START_HEAD -> $END_HEAD"
+  else
+    echo "iteration $i complete: $START_HEAD -> $END_HEAD"
+  fi
   sleep "$SLEEP_SECS"
 done
 
