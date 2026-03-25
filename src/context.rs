@@ -242,13 +242,15 @@ fn query_terms(query: &str) -> Vec<String> {
                 .to_lowercase(),
         );
         push_query_term(&mut terms, normalized.clone());
-        if normalized.contains('-') {
-            for piece in normalized.split('-') {
-                push_query_term(&mut terms, normalize_query_term(piece));
-            }
+        for piece in split_compound_term(&normalized) {
+            push_query_term(&mut terms, normalize_query_term(piece));
         }
     }
     terms
+}
+
+fn split_compound_term(term: &str) -> impl Iterator<Item = &str> {
+    term.split(|c| c == '-' || c == '_').filter(|piece| !piece.is_empty())
 }
 
 fn push_query_term(terms: &mut Vec<String>, term: String) {
@@ -276,7 +278,7 @@ fn scoring_terms(query: &str) -> Vec<String> {
     let terms = query_terms(query);
     let informative: Vec<String> = terms
         .iter()
-        .filter(|term| !is_routing_term(term) && !term.contains('-'))
+        .filter(|term| !is_routing_term(term) && !term.contains('-') && !term.contains('_'))
         .cloned()
         .collect();
     if informative.is_empty() {

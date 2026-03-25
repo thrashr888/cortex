@@ -753,13 +753,15 @@ fn query_terms(query: &str) -> Vec<String> {
                 .to_lowercase(),
         );
         push_query_term(&mut terms, normalized.clone());
-        if normalized.contains('-') {
-            for piece in normalized.split('-') {
-                push_query_term(&mut terms, normalize_query_term(piece));
-            }
+        for piece in split_compound_term(&normalized) {
+            push_query_term(&mut terms, normalize_query_term(piece));
         }
     }
     terms
+}
+
+fn split_compound_term(term: &str) -> impl Iterator<Item = &str> {
+    term.split(|c| c == '-' || c == '_').filter(|piece| !piece.is_empty())
 }
 
 fn push_query_term(terms: &mut Vec<String>, term: String) {
@@ -787,7 +789,7 @@ fn scoring_terms(query: &str) -> Vec<String> {
     let terms = query_terms(query);
     let informative: Vec<String> = terms
         .iter()
-        .filter(|term| !is_routing_term(term) && !term.contains('-'))
+        .filter(|term| !is_routing_term(term) && !term.contains('-') && !term.contains('_'))
         .cloned()
         .collect();
     if informative.is_empty() {
@@ -820,13 +822,11 @@ fn normalize_phrase(text: &str) -> String {
         .filter(|part| !part.is_empty())
         .flat_map(|part| {
             let normalized = normalize_query_term(&part.to_lowercase());
-            if normalized.contains('-') {
-                normalized
-                    .split('-')
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            } else {
+            let pieces: Vec<String> = split_compound_term(&normalized).map(str::to_string).collect();
+            if pieces.is_empty() {
                 vec![normalized]
+            } else {
+                pieces
             }
         })
         .filter(|part| !part.is_empty())
@@ -1015,13 +1015,15 @@ where
 fn build_fts_query(query: &str) -> String {
     let mut fts_terms = Vec::new();
     for term in query_terms(query) {
-        if term.contains('-') {
-            for piece in term.split('-') {
-                if !piece.is_empty() && !fts_terms.contains(&piece.to_string()) {
-                    fts_terms.push(piece.to_string());
-                }
+        let mut saw_piece = false;
+        for piece in split_compound_term(&term) {
+            saw_piece = true;
+            let piece = piece.to_string();
+            if !fts_terms.contains(&piece) {
+                fts_terms.push(piece);
             }
-        } else if !fts_terms.contains(&term) {
+        }
+        if !saw_piece && !fts_terms.contains(&term) {
             fts_terms.push(term);
         }
     }

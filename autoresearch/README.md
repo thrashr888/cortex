@@ -38,13 +38,13 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 300.0`
+- `hillclimb_score = 340.0`
 
-The raw hill-climb metric improved from `280.0 -> 300.0` after hardening hyphenated phrase retrieval and normalizing hyphenated query terms into phrase-friendly pieces.
+The raw hill-climb metric improved from `320.0 -> 340.0` after hardening snake_case phrase retrieval and normalizing underscore-separated query terms into phrase-friendly pieces.
 
 Current state:
-- the new case `hyphenated query should match spaced canonical phrase` now passes
-- earlier morphology and neighbor-entity hardening still holds
+- the new case `snake_case query should match spaced canonical phrase` now passes
+- earlier hyphenated phrase, morphology, and neighbor-entity hardening still holds
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
 - all current cases are again at `hillclimb_score = 20.0`
 
@@ -175,6 +175,19 @@ So we made another real retrieval improvement, but the current hill-climb metric
    - split hyphenated query terms into phrase-friendly pieces like `temp`, `file`
    - keep the original normalized phrase semantics so `temp-file writer` aligns with `temp file writer`
    - this raised `hillclimb_score` from `280.0` to `300.0`
+
+12. Snake_case query forms should behave like spaced phrases.
+   Example:
+   - query: `temp_file_writer`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for temp_file previews ...`
+
+   Without normalization, the literal underscore token `temp_file_writer` failed FTS lookup and query scoring, so the canonical spaced phrase could disappear entirely.
+
+   Fix:
+   - split underscore-separated query terms into phrase-friendly pieces like `temp`, `file`, `writer`
+   - apply the same underscore splitting in FTS query building and normalized phrase scoring
+   - this raised `hillclimb_score` from `320.0` to `340.0`
 
 ## Important files
 
