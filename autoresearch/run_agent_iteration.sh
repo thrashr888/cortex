@@ -35,6 +35,7 @@ PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
 
 cleanup_iteration() {
   git reset --hard "$START_COMMIT" >/dev/null 2>&1 || true
+  rm -f "$BASELINE_JSON" "$BASELINE_SUMMARY" "$EVAL_JSON"
   git clean -fdX autoresearch >/dev/null 2>&1 || true
 }
 

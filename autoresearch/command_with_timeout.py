@@ -19,7 +19,7 @@ def main() -> int:
     except subprocess.TimeoutExpired:
         try:
             proc.terminate()
-            return proc.wait(timeout=10)
+            proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
