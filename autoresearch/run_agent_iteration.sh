@@ -9,6 +9,7 @@ PROMPT_FILE="${PROMPT_FILE:-autoresearch/agent_prompt.md}"
 BASELINE_JSON="${BASELINE_JSON:-autoresearch/baseline.json}"
 BASELINE_SUMMARY="${BASELINE_SUMMARY:-autoresearch/baseline_summary.txt}"
 EVAL_JSON="${EVAL_JSON:-autoresearch/eval.json}"
+TMP_BASELINE_JSON="$(mktemp /tmp/cortex-baseline-XXXXXX.json)"
 LOG_FILE="${LOG_FILE:-autoresearch/agent-iteration.log}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-900}"
@@ -31,11 +32,12 @@ if [[ ! -f autoresearch/results.tsv ]]; then
 fi
 
 ./autoresearch/run_eval.sh "$BASELINE_JSON" > "$BASELINE_SUMMARY"
+cp "$BASELINE_JSON" "$TMP_BASELINE_JSON"
 PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
 
 cleanup_iteration() {
   git reset --hard "$START_COMMIT" >/dev/null 2>&1 || true
-  rm -f "$BASELINE_JSON" "$BASELINE_SUMMARY" "$EVAL_JSON"
+  rm -f "$BASELINE_JSON" "$BASELINE_SUMMARY" "$EVAL_JSON" "$TMP_BASELINE_JSON"
   git clean -fdX autoresearch >/dev/null 2>&1 || true
 }
 
@@ -80,7 +82,7 @@ if [[ ! -f "$EVAL_JSON" ]]; then
   ./autoresearch/run_eval.sh "$EVAL_JSON" >> "$LOG_FILE"
 fi
 
-COMPARE_OUTPUT="$(python3 autoresearch/score_compare.py "$BASELINE_JSON" "$EVAL_JSON")"
+COMPARE_OUTPUT="$(python3 autoresearch/score_compare.py "$TMP_BASELINE_JSON" "$EVAL_JSON")"
 echo "$COMPARE_OUTPUT" | tee -a "$LOG_FILE"
 VERDICT="$(printf '%s\n' "$COMPARE_OUTPUT" | head -n1)"
 END_COMMIT="$(git rev-parse HEAD)"

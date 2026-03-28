@@ -19,7 +19,7 @@ Required loop for this single iteration:
 4. Run exactly once:
    - cargo test
    - ./autoresearch/run_eval.sh autoresearch/eval.json
-5. Compare against the pre-iteration baseline.
+5. Compare against the pre-iteration baseline. Use `autoresearch/baseline_summary.txt` for the baseline snapshot and avoid deleting or modifying it.
 6. If improved by the keep/discard rules in autoresearch/program.md:
    - update autoresearch/README.md if needed
    - append one row to autoresearch/results.tsv
