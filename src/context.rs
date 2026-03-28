@@ -234,12 +234,14 @@ fn format_full(
 fn query_terms(query: &str) -> Vec<String> {
     let mut terms = Vec::new();
     for word in query.split_whitespace() {
-        let normalized = normalize_query_term(
+        let expanded = expand_camel_case(
             &word
                 .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect::<String>()
-                .to_lowercase(),
+                .collect::<String>(),
+        );
+        let normalized = normalize_query_term(
+            &expanded.to_lowercase(),
         );
         push_query_term(&mut terms, normalized.clone());
         for piece in split_compound_term(&normalized) {
@@ -251,6 +253,25 @@ fn query_terms(query: &str) -> Vec<String> {
 
 fn split_compound_term(term: &str) -> impl Iterator<Item = &str> {
     term.split(|c| c == '-' || c == '_').filter(|piece| !piece.is_empty())
+}
+
+fn expand_camel_case(term: &str) -> String {
+    let chars: Vec<char> = term.chars().collect();
+    let mut expanded = String::with_capacity(term.len() + 4);
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        if idx > 0 && ch.is_uppercase() {
+            let prev = chars[idx - 1];
+            let next = chars.get(idx + 1).copied();
+            let camel_boundary = prev.is_lowercase()
+                || prev.is_ascii_digit()
+                || (prev.is_uppercase() && next.map(|c| c.is_lowercase()).unwrap_or(false));
+            if camel_boundary {
+                expanded.push('_');
+            }
+        }
+        expanded.push(ch);
+    }
+    expanded
 }
 
 fn push_query_term(terms: &mut Vec<String>, term: String) {
@@ -291,12 +312,37 @@ fn scoring_terms(query: &str) -> Vec<String> {
 fn text_match_score(text: &str, terms: &[String], full_query: &str) -> usize {
     let lower = text.to_lowercase();
     let term_hits = terms.iter().filter(|term| lower.contains(term.as_str())).count();
-    let phrase_bonus = if !full_query.trim().is_empty() && lower.contains(&full_query.to_lowercase()) {
+    let literal_phrase_bonus = if !full_query.trim().is_empty() && lower.contains(&full_query.to_lowercase()) {
         1
     } else {
         0
     };
-    term_hits * 10 + phrase_bonus
+    let normalized_query = normalize_phrase(full_query);
+    let normalized_text = normalize_phrase(text);
+    let normalized_phrase_bonus = if !normalized_query.is_empty() && normalized_text.contains(&normalized_query) {
+        2
+    } else {
+        0
+    };
+    term_hits * 10 + literal_phrase_bonus + normalized_phrase_bonus
+}
+
+fn normalize_phrase(text: &str) -> String {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .filter(|part| !part.is_empty())
+        .flat_map(|part| {
+            let expanded = expand_camel_case(part);
+            let normalized = normalize_query_term(&expanded.to_lowercase());
+            let pieces: Vec<String> = split_compound_term(&normalized).map(str::to_string).collect();
+            if pieces.is_empty() {
+                vec![normalized]
+            } else {
+                pieces
+            }
+        })
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn query_term_hits(text: &str, terms: &[String]) -> usize {

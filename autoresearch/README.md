@@ -38,11 +38,12 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 340.0`
+- `hillclimb_score = 360.0`
 
-The raw hill-climb metric improved from `320.0 -> 340.0` after hardening snake_case phrase retrieval and normalizing underscore-separated query terms into phrase-friendly pieces.
+The raw hill-climb metric improved from `340.0 -> 360.0` after hardening camelCase phrase retrieval and splitting camelCase query terms into phrase-friendly pieces before ranking.
 
 Current state:
+- the new case `camelCase query should match spaced canonical phrase` now passes
 - the new case `snake_case query should match spaced canonical phrase` now passes
 - earlier hyphenated phrase, morphology, and neighbor-entity hardening still holds
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
@@ -188,6 +189,19 @@ So we made another real retrieval improvement, but the current hill-climb metric
    - split underscore-separated query terms into phrase-friendly pieces like `temp`, `file`, `writer`
    - apply the same underscore splitting in FTS query building and normalized phrase scoring
    - this raised `hillclimb_score` from `320.0` to `340.0`
+
+13. camelCase query forms should behave like spaced phrases.
+   Example:
+   - query: `tempFileWriter`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for tempFile previews ...`
+
+   Without camelCase-aware normalization, the query was treated like a single fused token, which failed FTS lookup and phrase scoring against the canonical spaced memory.
+
+   Fix:
+   - insert camelCase boundaries before lowercasing query terms
+   - apply the same camelCase expansion in normalized phrase scoring for retrieval and context routing
+   - this raised `hillclimb_score` from `340.0` to `360.0`
 
 ## Important files
 
