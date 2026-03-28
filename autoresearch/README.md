@@ -290,6 +290,7 @@ Notes:
 - timed-out or failed iterations are discarded by removing the disposable worktree, so the main branch stays clean
 - only kept commits are cherry-picked back onto the main branch
 - the agent subprocess is wrapped by `autoresearch/command_with_timeout.py` (`AGENT_TIMEOUT_SECS`, default `900`)
+- worktree iterations reuse the main repo `target/` via `CARGO_TARGET_DIR`, so follow-on runs are much faster than a cold first iteration
 - kept iterations are expected to create a real git commit inside the disposable worktree
 - progress is refreshed via `autoresearch/progress.png` after each kept eval run
 - local `autoresearch/results.tsv` is updated from kept iterations only

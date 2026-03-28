@@ -56,6 +56,7 @@ for i in $(seq 1 "$ITERATIONS"); do
     LOG_FILE="$LOG_FILE" \
     ALLOW_DIRTY=1 \
     AGENT_TIMEOUT_SECS="$AGENT_TIMEOUT_SECS" \
+    CARGO_TARGET_DIR="$ROOT/target" \
     bash autoresearch/run_agent_iteration.sh
   )
   ITER_EXIT=$?
