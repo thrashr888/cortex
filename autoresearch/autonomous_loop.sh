@@ -8,7 +8,7 @@ ITERATIONS="${1:-5}"
 AGENT_BIN="${AGENT_BIN:-hermes}"
 SLEEP_SECS="${SLEEP_SECS:-2}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
-AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-240}"
+AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-900}"
 
 if ! [[ "$ITERATIONS" =~ ^[0-9]+$ ]]; then
   echo "usage: $0 [iterations]" >&2

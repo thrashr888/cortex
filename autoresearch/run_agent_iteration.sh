@@ -11,7 +11,7 @@ BASELINE_SUMMARY="${BASELINE_SUMMARY:-autoresearch/baseline_summary.txt}"
 EVAL_JSON="${EVAL_JSON:-autoresearch/eval.json}"
 LOG_FILE="${LOG_FILE:-autoresearch/agent-iteration.log}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
-AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-240}"
+AGENT_TIMEOUT_SECS="${AGENT_TIMEOUT_SECS:-900}"
 
 if ! command -v "$AGENT_BIN" >/dev/null 2>&1; then
   echo "missing agent binary: $AGENT_BIN" >&2

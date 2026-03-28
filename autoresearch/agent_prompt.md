@@ -13,10 +13,10 @@ Objective:
 - Secondary hill-climb target: maximize hillclimb_score when total_score is unchanged
 
 Required loop for this single iteration:
-1. Inspect current scores, recent results rows, and current benchmark gaps.
-2. Form one focused hypothesis.
-3. Make one small reviewable change.
-4. Run:
+1. Spend at most a few minutes inspecting current scores, recent results rows, and one benchmark gap.
+2. Form exactly one focused hypothesis.
+3. Make one small reviewable change only.
+4. Run exactly once:
    - cargo test
    - ./autoresearch/run_eval.sh autoresearch/eval.json
 5. Compare against the pre-iteration baseline.
@@ -34,7 +34,8 @@ Required loop for this single iteration:
 Constraints:
 - Keep diffs small.
 - Do not weaken existing benchmark expectations.
-- Benchmark hardening is allowed when the current metric is saturated, but only with realistic harder cases.
+- Prefer product-logic fixes over benchmark hardening when a plausible code improvement exists.
+- Only harden the benchmark if you are genuinely saturated and the new case is realistic and narrowly scoped.
 - Prefer fixes in src/db.rs, src/context.rs, src/eval.rs, or src/sleep.rs.
 - Do not edit autoresearch runner infrastructure (`autoresearch/agent_prompt.md`, `autoresearch/run_agent_iteration.sh`, `autoresearch/autonomous_loop.sh`, `autoresearch/command_with_timeout.py`) during a normal product-improvement iteration.
 - Do not schedule cron jobs.
