@@ -748,7 +748,7 @@ fn query_terms(query: &str) -> Vec<String> {
         let expanded = expand_camel_case(
             &word
                 .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
                 .collect::<String>(),
         );
         let normalized = normalize_query_term(
@@ -763,7 +763,8 @@ fn query_terms(query: &str) -> Vec<String> {
 }
 
 fn split_compound_term(term: &str) -> impl Iterator<Item = &str> {
-    term.split(|c| c == '-' || c == '_').filter(|piece| !piece.is_empty())
+    term.split(|c| c == '-' || c == '_' || c == '.')
+        .filter(|piece| !piece.is_empty())
 }
 
 fn expand_camel_case(term: &str) -> String {
@@ -810,7 +811,12 @@ fn scoring_terms(query: &str) -> Vec<String> {
     let terms = query_terms(query);
     let informative: Vec<String> = terms
         .iter()
-        .filter(|term| !is_routing_term(term) && !term.contains('-') && !term.contains('_'))
+        .filter(|term| {
+            !is_routing_term(term)
+                && !term.contains('-')
+                && !term.contains('_')
+                && !term.contains('.')
+        })
         .cloned()
         .collect();
     if informative.is_empty() {
