@@ -38,11 +38,12 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 400.0`
+- `hillclimb_score = 420.0`
 
-The raw hill-climb metric improved from `380.0 -> 400.0` after hardening slash-delimited phrase retrieval and splitting slash-delimited query terms into phrase-friendly pieces before FTS lookup and ranking.
+The raw hill-climb metric improved from `400.0 -> 420.0` after teaching retrieval and scope routing to split Windows-style backslash-delimited query terms into phrase-friendly pieces before FTS lookup and ranking.
 
 Current state:
+- the new case `backslash-delimited query should match spaced canonical phrase` now passes
 - the new case `slash-delimited query should match spaced canonical phrase` now passes
 - the new case `dotted query should match spaced canonical phrase` now passes
 - the new case `camelCase query should match spaced canonical phrase` now passes
@@ -232,6 +233,20 @@ So we made another real retrieval improvement, but the current hill-climb metric
    - apply the same slash-delimited handling in retrieval scoring and context scope routing
    - this raised `hillclimb_score` from `380.0` to `400.0`
 
+16. Windows-style backslash-delimited query forms should behave like spaced phrases.
+   Example:
+   - query: `temp\file\writer`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for temp\file previews ...`
+
+   Without backslash-aware term splitting, the query collapsed into fused candidate-generation tokens for FTS lookup, so the canonical spaced phrase could disappear before the phrase-aware reranker had a chance to help.
+
+   Fix:
+   - preserve `\` during query-term normalization long enough to split it into phrase-friendly pieces
+   - exclude backslash-joined compounds from the topical scoring set once their pieces are available
+   - apply the same backslash-delimited handling in retrieval scoring and context scope routing
+   - this raised `hillclimb_score` from `400.0` to `420.0`
+
 ## Important files
 
 - `autoresearch/program.md`
@@ -354,7 +369,7 @@ When resuming autoresearch in a new session:
 
 ## Logging convention
 
-`autoresearch/results.tsv` is intentionally local/ignored right now (`autoresearch/results.*` in `.gitignore`).
+`autoresearch/results.tsv` and `autoresearch/progress.png` still match ignore rules in `autoresearch/.gitignore`, so the first committed snapshot on a branch needs `git add -f`.
 
 Use it for local notes like:
 - synthetic experiment id
