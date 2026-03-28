@@ -38,11 +38,12 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 380.0`
+- `hillclimb_score = 400.0`
 
-The raw hill-climb metric improved from `360.0 -> 380.0` after hardening dotted phrase retrieval and splitting dotted query terms into phrase-friendly pieces before FTS lookup and ranking.
+The raw hill-climb metric improved from `380.0 -> 400.0` after hardening slash-delimited phrase retrieval and splitting slash-delimited query terms into phrase-friendly pieces before FTS lookup and ranking.
 
 Current state:
+- the new case `slash-delimited query should match spaced canonical phrase` now passes
 - the new case `dotted query should match spaced canonical phrase` now passes
 - the new case `camelCase query should match spaced canonical phrase` now passes
 - the new case `snake_case query should match spaced canonical phrase` now passes
@@ -216,6 +217,20 @@ So we made another real retrieval improvement, but the current hill-climb metric
    - preserve `.` during query-term normalization long enough to split it into phrase-friendly pieces
    - apply the same dotted-term handling in retrieval scoring and context scope routing
    - this raised `hillclimb_score` from `360.0` to `380.0`
+
+15. Slash-delimited query forms should behave like spaced phrases.
+   Example:
+   - query: `temp/file/writer`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for temp/file previews ...`
+
+   Without slash-aware term splitting, the query collapsed into a fused token for FTS lookup, so the canonical spaced phrase could disappear entirely.
+
+   Fix:
+   - preserve `/` during query-term normalization long enough to split it into phrase-friendly pieces
+   - exclude slash-joined compounds from the topical scoring set once their pieces are available
+   - apply the same slash-delimited handling in retrieval scoring and context scope routing
+   - this raised `hillclimb_score` from `380.0` to `400.0`
 
 ## Important files
 
