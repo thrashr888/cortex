@@ -31,7 +31,7 @@ Secondary hill-climb metric:
 - `0be4661` Add memory-quality eval harness and contradiction filtering
 - `799f932` Hide superseded memories from retrieval context
 - `1169bdb` Harden eval against type-only preference matches
-- latest `autoresearch: handle semicolon-delimited query terms`
+- latest `autoresearch: handle pipe-delimited query terms`
 
 ## Current benchmark status
 
@@ -39,12 +39,12 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 500.0`
+- `hillclimb_score = 520.0`
 
-The raw hill-climb metric improved from `480.0 -> 500.0` after adding another realistic delimiter family case and teaching query normalization to split semicolon-delimited forms like `temp;file;writer` into phrase-friendly pieces.
+The raw hill-climb metric improved from `500.0 -> 520.0` after adding another realistic delimiter family case and teaching query normalization to split pipe-delimited forms like `temp|file|writer` into phrase-friendly pieces.
 
 Current state:
-- delimiter-family cases now cover hyphenated, snake_case, camelCase, dotted, slash-delimited, backslash-delimited, namespace-delimited, plus-delimited, comma-delimited, and semicolon-delimited queries
+- delimiter-family cases now cover hyphenated, snake_case, camelCase, dotted, slash-delimited, backslash-delimited, namespace-delimited, plus-delimited, comma-delimited, semicolon-delimited, and pipe-delimited queries
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
 - all current cases are again at `hillclimb_score = 20.0`
 
@@ -283,6 +283,20 @@ So we made another real retrieval improvement, but the current hill-climb metric
    - exclude semicolon-joined compounds from topical scoring once their pieces are available
    - apply the same semicolon-delimited handling in retrieval scoring and context scope routing
    - this raised `hillclimb_score` from `480.0` to `500.0`
+
+20. Pipe-delimited query forms should behave like spaced phrases.
+   Example:
+   - query: `temp|file|writer`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for temp|file previews ...`
+
+   Without normalization, the `|` separators were dropped before compound splitting, so copied log-field or table-like queries collapsed into a fused token and could miss the canonical spaced phrase.
+
+   Fix:
+   - preserve `|` during query-term normalization long enough to split it into phrase-friendly pieces
+   - exclude pipe-joined compounds from topical scoring once their pieces are available
+   - apply the same pipe-delimited handling in retrieval scoring and context scope routing
+   - this raised `hillclimb_score` from `500.0` to `520.0`
 
 ## Important files
 

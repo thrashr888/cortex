@@ -560,6 +560,29 @@
       "forbidden_context_substrings": ["temp;file previews now rotates logs"]
     },
     {
+      "name": "pipe-delimited query should match spaced canonical phrase",
+      "query": "temp|file|writer",
+      "limit": 3,
+      "project_memories": [
+        {
+          "key": "temp_file_writer_lock",
+          "content": "Fixed race condition in upload handler by locking the temp file writer.",
+          "type": "bugfix",
+          "confidence": 1.0
+        },
+        {
+          "key": "temp_file_preview_writer",
+          "content": "Writer used for temp|file previews now rotates logs before reconnect.",
+          "type": "bugfix",
+          "confidence": 0.4
+        }
+      ],
+      "expected_project_keys": ["temp_file_writer_lock"],
+      "disallowed_project_keys": ["temp_file_preview_writer"],
+      "required_context_substrings": ["locking the temp file writer"],
+      "forbidden_context_substrings": ["temp|file previews now rotates logs"]
+    },
+    {
       "name": "morphology-aware retrieval should prefer canonical retry memory",
       "query": "upload retries 503",
       "limit": 3,
