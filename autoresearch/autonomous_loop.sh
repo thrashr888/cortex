@@ -23,7 +23,7 @@ fi
 
 mkdir -p autoresearch/logs "$WORKTREE_BASE"
 
-append_results_row() {
+append_results_rows() {
   local src_tsv="$1"
   local dest_tsv="$ROOT/autoresearch/results.tsv"
   if [[ ! -f "$src_tsv" ]]; then
@@ -32,11 +32,13 @@ append_results_row() {
   if [[ ! -f "$dest_tsv" ]]; then
     printf 'commit\ttotal_score\trecall_score\tcontext_score\thillclimb_score\tstatus\tdescription\n' > "$dest_tsv"
   fi
-  local last_row
-  last_row="$(tail -n 1 "$src_tsv")"
-  if [[ -n "$last_row" && "$last_row" != commit$'\t'* ]]; then
-    printf '%s\n' "$last_row" >> "$dest_tsv"
-  fi
+
+  tail -n +2 "$src_tsv" | while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    if ! grep -Fqx "$row" "$dest_tsv"; then
+      printf '%s\n' "$row" >> "$dest_tsv"
+    fi
+  done
 }
 
 for i in $(seq 1 "$ITERATIONS"); do
@@ -71,11 +73,12 @@ for i in $(seq 1 "$ITERATIONS"); do
   fi
 
   if [[ "$WT_HEAD" != "$START_COMMIT" ]]; then
+    rm -f "$ROOT/autoresearch/progress.png" "$ROOT/autoresearch/eval.json" "$ROOT/autoresearch/baseline.json" "$ROOT/autoresearch/baseline_summary.txt"
     while IFS= read -r commit; do
       [[ -n "$commit" ]] || continue
       git cherry-pick "$commit" >/dev/null
     done < <(git -C "$WT_DIR" rev-list --reverse "$START_COMMIT..$WT_HEAD")
-    append_results_row "$WT_DIR/autoresearch/results.tsv"
+    append_results_rows "$WT_DIR/autoresearch/results.tsv"
     ./autoresearch/run_eval.sh autoresearch/eval.json >/dev/null
   fi
 

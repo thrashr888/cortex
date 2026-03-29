@@ -38,12 +38,12 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 420.0`
+- `hillclimb_score = 440.0`
 
-The raw hill-climb metric improved from `340.0 -> 420.0` after hardening path-style query normalization so slash-delimited and backslash-delimited query forms behave more like spaced phrases.
+The raw hill-climb metric improved from `340.0 -> 440.0` after hardening path-style and namespace-style query normalization so slash-delimited, backslash-delimited, and double-colon query forms behave more like spaced phrases.
 
 Current state:
-- the loop found and kept improvements for slash-delimited and backslash-delimited queries
+- the loop found and kept improvements for slash-delimited, backslash-delimited, and namespace-delimited queries
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
 - all current cases are again at `hillclimb_score = 20.0`
 
