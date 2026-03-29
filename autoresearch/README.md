@@ -38,16 +38,16 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 440.0`
+- `hillclimb_score = 460.0`
 
-The raw hill-climb metric improved from `340.0 -> 440.0` after hardening path-style and namespace-style query normalization so slash-delimited, backslash-delimited, and double-colon query forms behave more like spaced phrases.
+The raw hill-climb metric improved from `420.0 -> 460.0` after adding another realistic delimiter family case and teaching query normalization to split plus-delimited forms like `temp+file+writer` into phrase-friendly pieces.
 
 Current state:
-- the loop found and kept improvements for slash-delimited, backslash-delimited, and namespace-delimited queries
+- delimiter-family cases now cover hyphenated, snake_case, camelCase, dotted, slash-delimited, backslash-delimited, namespace-delimited, and plus-delimited queries
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
 - all current cases are again at `hillclimb_score = 20.0`
 
-So the project did improve materially, but the current hill-climb metric is saturated again. The next useful step is another benchmark hardening pass or a finer-grained hill-climb component.
+So we made another real retrieval improvement, but the current hill-climb metric is saturated again. The next useful step is another benchmark hardening pass or a finer-grained hill-climb component.
 
 ## What we learned so far
 

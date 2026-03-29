@@ -241,6 +241,7 @@ fn query_terms(query: &str) -> Vec<String> {
                     c.is_alphanumeric()
                         || *c == '_'
                         || *c == '-'
+                        || *c == '+'
                         || *c == '.'
                         || *c == '/'
                         || *c == '\\'
@@ -260,7 +261,7 @@ fn query_terms(query: &str) -> Vec<String> {
 }
 
 fn split_compound_term(term: &str) -> impl Iterator<Item = &str> {
-    term.split(|c| c == '-' || c == '_' || c == '.' || c == '/' || c == '\\' || c == ':')
+    term.split(|c| c == '-' || c == '_' || c == '+' || c == '.' || c == '/' || c == '\\' || c == ':')
         .filter(|piece| !piece.is_empty())
 }
 
@@ -312,6 +313,7 @@ fn scoring_terms(query: &str) -> Vec<String> {
             !is_routing_term(term)
                 && !term.contains('-')
                 && !term.contains('_')
+                && !term.contains('+')
                 && !term.contains('.')
                 && !term.contains('/')
                 && !term.contains('\\')
