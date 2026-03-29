@@ -1,2 +1,3 @@
 commit	total_score	recall_score	context_score	hillclimb_score	status	description
-b71ae25	100.0	100.0	100.0	420.0	keep	handle backslash-delimited query terms like spaced phrases
+b71ae25	100.0	100.0	100.0	400.0	keep	split slash-delimited query terms so path-like queries behave more like spaced phrases
+4efbe08	100.0	100.0	100.0	420.0	keep	handle backslash-delimited queries so Windows-style separators behave like spaced phrases

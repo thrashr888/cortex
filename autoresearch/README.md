@@ -40,19 +40,14 @@ As of latest run:
 - `context_score = 100.0`
 - `hillclimb_score = 420.0`
 
-The raw hill-climb metric improved from `400.0 -> 420.0` after teaching retrieval and scope routing to split Windows-style backslash-delimited query terms into phrase-friendly pieces before FTS lookup and ranking.
+The raw hill-climb metric improved from `340.0 -> 420.0` after hardening path-style query normalization so slash-delimited and backslash-delimited query forms behave more like spaced phrases.
 
 Current state:
-- the new case `backslash-delimited query should match spaced canonical phrase` now passes
-- the new case `slash-delimited query should match spaced canonical phrase` now passes
-- the new case `dotted query should match spaced canonical phrase` now passes
-- the new case `camelCase query should match spaced canonical phrase` now passes
-- the new case `snake_case query should match spaced canonical phrase` now passes
-- earlier hyphenated phrase, morphology, and neighbor-entity hardening still holds
+- the loop found and kept improvements for slash-delimited and backslash-delimited queries
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
 - all current cases are again at `hillclimb_score = 20.0`
 
-So we made another real retrieval improvement, but the current hill-climb metric is saturated again. The next useful step is another benchmark hardening pass or a finer-grained hill-climb component.
+So the project did improve materially, but the current hill-climb metric is saturated again. The next useful step is another benchmark hardening pass or a finer-grained hill-climb component.
 
 ## What we learned so far
 
