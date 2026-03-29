@@ -234,13 +234,27 @@ So we made another real retrieval improvement, but the current hill-climb metric
    - canonical memory: `... locking the temp file writer.`
    - distractor: `Writer used for temp\file previews ...`
 
-   Without backslash-aware term splitting, the query collapsed into fused candidate-generation tokens for FTS lookup, so the canonical spaced phrase could disappear before the phrase-aware reranker had a chance to help.
+   Without normalization, the `\` separators were dropped as punctuation before compound splitting, so the query collapsed toward a fused token and the canonical spaced phrase lost important structure.
 
    Fix:
    - preserve `\` during query-term normalization long enough to split it into phrase-friendly pieces
    - exclude backslash-joined compounds from the topical scoring set once their pieces are available
    - apply the same backslash-delimited handling in retrieval scoring and context scope routing
    - this raised `hillclimb_score` from `400.0` to `420.0`
+
+17. URL-style plus-delimited query forms should behave like spaced phrases.
+   Example:
+   - query: `temp+file+writer`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for temp+file previews ...`
+
+   Without normalization, the `+` separators were discarded before compound splitting, so the query lost the phrase structure needed to align with the canonical spaced memory.
+
+   Fix:
+   - preserve `+` during query-term normalization long enough to split it into phrase-friendly pieces
+   - exclude plus-joined compounds from the topical scoring set once their pieces are available
+   - apply the same plus-delimited handling in retrieval scoring and context scope routing
+   - this raised `hillclimb_score` from `420.0` to `460.0`
 
 ## Important files
 
