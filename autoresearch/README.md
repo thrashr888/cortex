@@ -31,6 +31,7 @@ Secondary hill-climb metric:
 - `0be4661` Add memory-quality eval harness and contradiction filtering
 - `799f932` Hide superseded memories from retrieval context
 - `1169bdb` Harden eval against type-only preference matches
+- latest `autoresearch: handle comma-delimited query terms`
 
 ## Current benchmark status
 
@@ -38,16 +39,16 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 460.0`
+- `hillclimb_score = 480.0`
 
-The raw hill-climb metric improved from `340.0 -> 460.0` after hardening path-style, namespace-style, and URL-style query normalization so slash-delimited, backslash-delimited, double-colon, and plus-delimited query forms behave more like spaced phrases.
+The raw hill-climb metric improved from `460.0 -> 480.0` after adding another realistic delimiter family case and teaching query normalization to split comma-delimited forms like `temp,file,writer` into phrase-friendly pieces.
 
 Current state:
-- the loop found and kept improvements for slash-delimited, backslash-delimited, namespace-delimited, and plus-delimited queries
+- delimiter-family cases now cover hyphenated, snake_case, camelCase, dotted, slash-delimited, backslash-delimited, namespace-delimited, plus-delimited, and comma-delimited queries
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
 - all current cases are again at `hillclimb_score = 20.0`
 
-So the project did improve materially, but the current hill-climb metric is saturated again. The next useful step is another benchmark hardening pass or a finer-grained hill-climb component.
+So we made another real retrieval improvement, but the current hill-climb metric is saturated again. The next useful step is another benchmark hardening pass or a finer-grained hill-climb component.
 
 ## What we learned so far
 
@@ -255,6 +256,19 @@ So the project did improve materially, but the current hill-climb metric is satu
    - exclude plus-joined compounds from the topical scoring set once their pieces are available
    - apply the same plus-delimited handling in retrieval scoring and context scope routing
    - this raised `hillclimb_score` from `420.0` to `460.0`
+
+18. Comma-delimited query forms should behave like spaced phrases.
+   Example:
+   - query: `temp,file,writer`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for temp,file previews ...`
+
+   Without normalization, the comma-delimited phrase stayed fused in context scope routing, so copied punctuation-separated queries could lose the canonical spaced memory.
+
+   Fix:
+   - preserve `,` during query-term normalization long enough to split it into phrase-friendly pieces
+   - apply the same comma-delimited handling in retrieval scoring and context scope routing
+   - this raised `hillclimb_score` from `460.0` to `480.0`
 
 ## Important files
 

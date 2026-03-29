@@ -1255,6 +1255,21 @@ mod tests {
     }
 
     #[test]
+    fn comma_delimited_query_matches_spaced_canonical_phrase() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("eval")
+            .join("benchmark.json");
+        let report = run_benchmark_file(&path).unwrap();
+        let case = report
+            .case_reports
+            .iter()
+            .find(|case| case.name == "comma-delimited query should match spaced canonical phrase")
+            .unwrap();
+        assert_eq!(case.retrieved_project_keys, vec!["temp_file_writer_lock".to_string()]);
+        assert!(case.present_forbidden_context.is_empty(), "unexpected case: {case:#?}");
+    }
+
+    #[test]
     fn morphology_case_prefers_canonical_retry_memory() {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("eval")
