@@ -31,7 +31,7 @@ Secondary hill-climb metric:
 - `0be4661` Add memory-quality eval harness and contradiction filtering
 - `799f932` Hide superseded memories from retrieval context
 - `1169bdb` Harden eval against type-only preference matches
-- latest `autoresearch: handle comma-delimited query terms`
+- latest `autoresearch: handle semicolon-delimited query terms`
 
 ## Current benchmark status
 
@@ -39,12 +39,12 @@ As of latest run:
 - `total_score = 100.0`
 - `recall_score = 100.0`
 - `context_score = 100.0`
-- `hillclimb_score = 480.0`
+- `hillclimb_score = 500.0`
 
-The raw hill-climb metric improved from `460.0 -> 480.0` after adding another realistic delimiter family case and teaching query normalization to split comma-delimited forms like `temp,file,writer` into phrase-friendly pieces.
+The raw hill-climb metric improved from `480.0 -> 500.0` after adding another realistic delimiter family case and teaching query normalization to split semicolon-delimited forms like `temp;file;writer` into phrase-friendly pieces.
 
 Current state:
-- delimiter-family cases now cover hyphenated, snake_case, camelCase, dotted, slash-delimited, backslash-delimited, namespace-delimited, plus-delimited, and comma-delimited queries
+- delimiter-family cases now cover hyphenated, snake_case, camelCase, dotted, slash-delimited, backslash-delimited, namespace-delimited, plus-delimited, comma-delimited, and semicolon-delimited queries
 - `autoresearch/run_eval.sh` regenerates `autoresearch/progress.png` each run so progress is visible at a glance
 - all current cases are again at `hillclimb_score = 20.0`
 
@@ -269,6 +269,20 @@ So we made another real retrieval improvement, but the current hill-climb metric
    - preserve `,` during query-term normalization long enough to split it into phrase-friendly pieces
    - apply the same comma-delimited handling in retrieval scoring and context scope routing
    - this raised `hillclimb_score` from `460.0` to `480.0`
+
+19. Semicolon-delimited query forms should behave like spaced phrases.
+   Example:
+   - query: `temp;file;writer`
+   - canonical memory: `... locking the temp file writer.`
+   - distractor: `Writer used for temp;file previews ...`
+
+   Without normalization, the semicolon-delimited phrase stayed fused in focused retrieval and context scope routing, so copied field-like queries could lose the canonical spaced memory.
+
+   Fix:
+   - preserve `;` during query-term normalization long enough to split it into phrase-friendly pieces
+   - exclude semicolon-joined compounds from topical scoring once their pieces are available
+   - apply the same semicolon-delimited handling in retrieval scoring and context scope routing
+   - this raised `hillclimb_score` from `480.0` to `500.0`
 
 ## Important files
 

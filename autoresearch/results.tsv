@@ -4,3 +4,4 @@ b71ae25	100.0	100.0	100.0	400.0	keep	split slash-delimited query terms so path-l
 47f243d	100.0	100.0	100.0	440.0	keep	support namespace-delimited queries so double-colon style terms behave more like spaced phrases
 2026-03-28-plus	100.0	100.0	100.0	460.0	keep	handle plus-delimited query terms so URL-style phrase copies behave like spaced phrases
 2026-03-29-comma	100.0	100.0	100.0	480.0	keep	handle comma-delimited query terms so punctuation-separated phrase copies behave like spaced phrases
+2026-03-29-semicolon	100.0	100.0	100.0	500.0	keep	handle semicolon-delimited query terms so field-like phrase copies behave like spaced phrases
