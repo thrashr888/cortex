@@ -38,6 +38,12 @@ pub struct BenchmarkCase {
     pub required_context_substrings: Vec<String>,
     #[serde(default)]
     pub forbidden_context_substrings: Vec<String>,
+    /// Optional approximate token budget used to exercise prompt packing.
+    #[serde(default)]
+    pub context_budget_tokens: Option<usize>,
+    /// Opt-in lineage output makes consolidated source IDs testable.
+    #[serde(default)]
+    pub include_lineage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +100,9 @@ pub struct CaseReport {
     pub retrieved_global_keys: Vec<String>,
     pub missing_required_context: Vec<String>,
     pub present_forbidden_context: Vec<String>,
+    pub estimated_context_tokens: usize,
+    pub context_budget_tokens: Option<usize>,
+    pub context_within_budget: bool,
 }
 
 #[derive(Debug)]
@@ -167,6 +176,14 @@ pub fn format_report(report: &BenchmarkReport) -> String {
                 case.present_forbidden_context.join(" | ")
             ));
         }
+        if let Some(budget) = case.context_budget_tokens {
+            out.push_str(&format!(
+                "  context_budget: {}/{} tokens ({})\n",
+                case.estimated_context_tokens,
+                budget,
+                if case.context_within_budget { "within budget" } else { "over budget" },
+            ));
+        }
     }
 
     out
@@ -224,9 +241,19 @@ fn run_case(case: &BenchmarkCase) -> Result<CaseReport> {
         false,
         Some(&case.query),
         case.limit,
+        case.context_budget_tokens,
+        case.include_lineage,
     )?;
-    let (context_score, missing_required_context, present_forbidden_context) =
+    let (mut context_score, missing_required_context, present_forbidden_context) =
         score_context(&rendered_context, &case.required_context_substrings, &case.forbidden_context_substrings);
+    let estimated_context_tokens = context::estimate_tokens(&rendered_context);
+    let context_within_budget = case
+        .context_budget_tokens
+        .map(|budget| estimated_context_tokens <= budget)
+        .unwrap_or(true);
+    if !context_within_budget {
+        context_score = 0.0;
+    }
     let hillclimb_score = score_hillclimb_case(
         &retrieved.project_keys,
         &retrieved.global_keys,
@@ -253,6 +280,9 @@ fn run_case(case: &BenchmarkCase) -> Result<CaseReport> {
         retrieved_global_keys: retrieved.global_keys,
         missing_required_context,
         present_forbidden_context,
+        estimated_context_tokens,
+        context_budget_tokens: case.context_budget_tokens,
+        context_within_budget,
     })
 }
 
@@ -810,7 +840,7 @@ mod tests {
         let search = db::search_consolidated(&cons_conn, "retry policy upload", 5).unwrap();
         assert_eq!(search.iter().map(|m| m.id).collect::<Vec<_>>(), vec![new_id]);
 
-        let ctx = context::format_context(&cons_conn, &raw_conn, None, false, Some("retry policy upload"), 5).unwrap();
+        let ctx = context::format_context(&cons_conn, &raw_conn, None, false, Some("retry policy upload"), 5, None, false).unwrap();
         assert!(ctx.contains("caps backoff at 5 seconds"), "ctx={ctx}");
         assert!(!ctx.contains("up to 30 seconds"), "ctx={ctx}");
     }
@@ -868,6 +898,8 @@ mod tests {
             false,
             Some("upload preference"),
             2,
+            None,
+            false,
         )
         .unwrap();
 
@@ -950,6 +982,8 @@ mod tests {
             false,
             Some("upload retry preference"),
             3,
+            None,
+            false,
         )
         .unwrap();
 
@@ -999,6 +1033,8 @@ mod tests {
             false,
             Some("prefer upload retries"),
             3,
+            None,
+            false,
         )
         .unwrap();
 
@@ -1045,6 +1081,8 @@ mod tests {
             false,
             Some("upload retry cap"),
             3,
+            None,
+            false,
         )
         .unwrap();
 

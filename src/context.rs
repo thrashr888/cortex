@@ -60,7 +60,12 @@ pub fn format_context(
     compact: bool,
     query: Option<&str>,
     limit: usize,
+    budget_tokens: Option<usize>,
+    include_lineage: bool,
 ) -> Result<String> {
+    if matches!(budget_tokens, Some(0)) {
+        anyhow::bail!("Context token budget must be greater than zero.");
+    }
     // Load memories - either search-based (relevant) or all
     let mut consolidated = match query {
         Some(q) if !q.trim().is_empty() => db::search_consolidated(cons_conn, q, limit)?,
@@ -131,10 +136,34 @@ pub fn format_context(
         vec![]
     };
 
-    if compact {
-        Ok(format_compact(&consolidated, &skills, &stats, &global_consolidated, &entities))
+    if let Some(budget_tokens) = budget_tokens {
+        Ok(format_budgeted(
+            &consolidated,
+            &global_consolidated,
+            &entities,
+            budget_tokens,
+            include_lineage,
+        ))
+    } else if compact {
+        Ok(format_compact(
+            &consolidated,
+            &skills,
+            &stats,
+            &global_consolidated,
+            &entities,
+            include_lineage,
+        ))
     } else {
-        Ok(format_full(&consolidated, &skills, &stats, &global_consolidated, &global_skills, &entities, &relationships))
+        Ok(format_full(
+            &consolidated,
+            &skills,
+            &stats,
+            &global_consolidated,
+            &global_skills,
+            &entities,
+            &relationships,
+            include_lineage,
+        ))
     }
 }
 
@@ -146,6 +175,7 @@ fn format_full(
     global_skills: &[Skill],
     entities: &[Entity],
     relationships: &[Relationship],
+    include_lineage: bool,
 ) -> String {
     let mut out = String::from("## Project Memory Context\n\n");
 
@@ -180,10 +210,7 @@ fn format_full(
     if !consolidated.is_empty() {
         out.push_str("### Learned Patterns\n");
         for m in consolidated {
-            out.push_str(&format!(
-                "- [{}] {} (confidence: {:.2})\n",
-                m.r#type, m.content, m.confidence
-            ));
+            out.push_str(&format_memory_line(m, include_lineage));
         }
         out.push('\n');
     }
@@ -200,10 +227,7 @@ fn format_full(
     if !global_consolidated.is_empty() {
         out.push_str("### Global Knowledge\n");
         for m in global_consolidated {
-            out.push_str(&format!(
-                "- [{}] {} (confidence: {:.2})\n",
-                m.r#type, m.content, m.confidence
-            ));
+            out.push_str(&format_memory_line(m, include_lineage));
         }
         out.push('\n');
     }
@@ -383,15 +407,16 @@ fn format_compact(
     stats: &Stats,
     global_consolidated: &[ConsolidatedMemory],
     entities: &[Entity],
+    include_lineage: bool,
 ) -> String {
     let patterns: Vec<String> = consolidated
         .iter()
-        .map(|m| m.content.clone())
+        .map(|m| compact_memory_label(m, include_lineage))
         .collect();
 
     let global_patterns: Vec<String> = global_consolidated
         .iter()
-        .map(|m| m.content.clone())
+        .map(|m| compact_memory_label(m, include_lineage))
         .collect();
 
     let entity_names: Vec<String> = entities
@@ -421,4 +446,152 @@ fn format_compact(
     }
 
     result
+}
+
+fn format_memory_line(memory: &ConsolidatedMemory, include_lineage: bool) -> String {
+    let lineage = if include_lineage {
+        let evidence = if memory.source_ids.is_empty() {
+            "none".to_string()
+        } else {
+            memory
+                .source_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        format!(" (memory #{}, evidence: {})", memory.id, evidence)
+    } else {
+        String::new()
+    };
+    format!(
+        "- [{}] {} (confidence: {:.2}){}\n",
+        memory.r#type, memory.content, memory.confidence, lineage
+    )
+}
+
+fn compact_memory_label(memory: &ConsolidatedMemory, include_lineage: bool) -> String {
+    if include_lineage {
+        let evidence = if memory.source_ids.is_empty() {
+            "none".to_string()
+        } else {
+            memory
+                .source_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!("{} [memory #{}, evidence: {}]", memory.content, memory.id, evidence)
+    } else {
+        memory.content.clone()
+    }
+}
+
+/// A small deterministic approximation that is intentionally shared with the
+/// benchmark. It keeps context packing provider-agnostic without adding a
+/// tokenizer runtime dependency.
+pub fn estimate_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(3)
+}
+
+fn format_budgeted(
+    consolidated: &[ConsolidatedMemory],
+    global_consolidated: &[ConsolidatedMemory],
+    entities: &[Entity],
+    budget_tokens: usize,
+    include_lineage: bool,
+) -> String {
+    let mut out = String::new();
+    let header = "## Project Memory Context\n\n";
+    if estimate_tokens(header) > budget_tokens {
+        return truncate_to_budget("Memory context", budget_tokens);
+    }
+    out.push_str(header);
+
+    append_budgeted_section(
+        &mut out,
+        "Learned Patterns",
+        consolidated
+            .iter()
+            .map(|memory| format_memory_line(memory, include_lineage))
+            .collect(),
+        budget_tokens,
+    );
+    append_budgeted_section(
+        &mut out,
+        "Global Knowledge",
+        global_consolidated
+            .iter()
+            .map(|memory| format_memory_line(memory, include_lineage))
+            .collect(),
+        budget_tokens,
+    );
+    append_budgeted_section(
+        &mut out,
+        "Key Entities",
+        entities
+            .iter()
+            .map(|entity| {
+                format!(
+                    "- {} ({}){}\n",
+                    entity.name,
+                    entity.entity_type,
+                    entity
+                        .description
+                        .as_deref()
+                        .map(|description| format!(": {description}"))
+                        .unwrap_or_default(),
+                )
+            })
+            .collect(),
+        budget_tokens,
+    );
+
+    if out == header {
+        return truncate_to_budget("No relevant memory fits this context budget.", budget_tokens);
+    }
+    out
+}
+
+fn append_budgeted_section(out: &mut String, title: &str, lines: Vec<String>, budget_tokens: usize) {
+    if lines.is_empty() {
+        return;
+    }
+
+    let starting_len = out.len();
+    let header = format!("### {title}\n");
+    let mut added = false;
+    for line in lines {
+        let candidate = if added {
+            line
+        } else {
+            format!("{header}{line}")
+        };
+        if estimate_tokens(&format!("{out}{candidate}")) <= budget_tokens {
+            out.push_str(&candidate);
+            added = true;
+        }
+    }
+    if added {
+        out.push('\n');
+        if estimate_tokens(out) > budget_tokens {
+            out.truncate(out.len() - 1);
+        }
+    } else {
+        out.truncate(starting_len);
+    }
+}
+
+fn truncate_to_budget(text: &str, budget_tokens: usize) -> String {
+    let mut truncated = String::new();
+    for character in text.chars() {
+        let mut next = truncated.clone();
+        next.push(character);
+        if estimate_tokens(&next) > budget_tokens {
+            break;
+        }
+        truncated.push(character);
+    }
+    truncated
 }

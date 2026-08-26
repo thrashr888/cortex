@@ -13,6 +13,9 @@ pub struct Memory {
     pub session_id: Option<String>,
     #[serde(default)]
     pub entity_ids: Vec<i64>,
+    /// Opaque pointers to large supporting artifacts. Cortex never stores their payloads.
+    #[serde(default)]
+    pub artifact_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

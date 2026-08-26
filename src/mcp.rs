@@ -105,7 +105,9 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                         "properties": {
                             "content": { "type": "string", "description": "What was learned or observed" },
                             "type": { "type": "string", "description": "Type: bugfix, decision, pattern, preference, observation", "default": "observation" },
-                            "global": { "type": "boolean", "description": "Save to global ~/.cortex/ instead of project (for cross-project knowledge)", "default": false }
+                            "global": { "type": "boolean", "description": "Save to global ~/.cortex/ instead of project (for cross-project knowledge)", "default": false },
+                            "artifact_refs": { "type": "array", "items": { "type": "string" }, "description": "Stable references to large supporting artifacts. Cortex stores only refs, never artifact payloads." },
+                            "session_id": { "type": "string", "description": "Optional stable host session ID; defaults to the MCP server session." }
                         },
                         "required": ["content"]
                     }
@@ -130,8 +132,23 @@ async fn handle_request(req: &JsonRpcRequest, cortex_dir: &PathBuf, session_id: 
                         "properties": {
                             "compact": { "type": "boolean", "description": "Return compact single-line format", "default": false },
                             "query": { "type": "string", "description": "Optional search query to load only relevant memories. If omitted, loads all memories." },
-                            "limit": { "type": "integer", "description": "Max number of relevant memories to include (default: 15)", "default": 15 }
+                            "limit": { "type": "integer", "description": "Max number of relevant memories to include (default: 15)", "default": 15 },
+                            "budget_tokens": { "type": "integer", "description": "Optional approximate maximum token budget for selected context." },
+                            "include_lineage": { "type": "boolean", "description": "Include consolidated memory and evidence IDs for recovery with cortex_expand.", "default": false }
                         }
+                    }
+                },
+                {
+                    "name": "cortex_expand",
+                    "description": "Recover the exact project observations and opaque artifact refs behind a consolidated memory. Use an ID from cortex_context with include_lineage=true.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "consolidated_id": { "type": "integer", "description": "Project consolidated memory ID" },
+                            "source_offset": { "type": "integer", "description": "Zero-based source page offset", "default": 0 },
+                            "source_limit": { "type": "integer", "description": "Maximum source observations to return (default 10, max 100)", "default": 10 }
+                        },
+                        "required": ["consolidated_id"]
                     }
                 },
                 {
@@ -169,16 +186,28 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let mem_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("observation");
             let global = args.get("global").and_then(|v| v.as_bool()).unwrap_or(false);
+            let artifact_refs = string_array_arg(args, "artifact_refs")?;
+            let memory_session_id = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(session_id);
+            let artifact_suffix = if artifact_refs.is_empty() {
+                String::new()
+            } else {
+                format!(", {} artifact ref(s)", artifact_refs.len())
+            };
 
             if global {
                 let gd = init::ensure_global_dir()?;
                 let raw_conn = db::open_raw_db(&gd.join("raw.db"))?;
-                let id = db::save_memory(&raw_conn, content, mem_type, session_id)?;
-                Ok(format!("Saved global memory #{} (type: {})", id, mem_type))
+                let id = db::save_memory_with_artifact_refs(&raw_conn, content, mem_type, memory_session_id, &artifact_refs)?;
+                Ok(format!("Saved global memory #{} (type: {}{})", id, mem_type, artifact_suffix))
             } else {
                 let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
                 let config = config::load_config(cortex_dir)?;
-                let id = db::save_memory(&raw_conn, content, mem_type, session_id)?;
+                let id = db::save_memory_with_artifact_refs(&raw_conn, content, mem_type, memory_session_id, &artifact_refs)?;
 
                 // Try to extract entities (best-effort)
                 let entity_msg = match llm::extract_entities(content, &config).await {
@@ -213,7 +242,7 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
                     let _ = sleep::micro_sleep(&raw_conn, &config);
                 }
 
-                Ok(format!("Saved memory #{} (type: {}{})", id, mem_type, entity_msg))
+                Ok(format!("Saved memory #{} (type: {}{}{})", id, mem_type, entity_msg, artifact_suffix))
             }
         }
         "cortex_recall" => {
@@ -247,6 +276,7 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
                                 importance: m.confidence,
                                 session_id: None,
                                 entity_ids: vec![],
+                                artifact_refs: vec![],
                             });
                         }
                     }
@@ -263,12 +293,48 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
             let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
             let query = args.get("query").and_then(|v| v.as_str());
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(15) as usize;
+            let budget_tokens = args.get("budget_tokens").and_then(|v| v.as_u64()).map(|value| value as usize);
+            let include_lineage = args.get("include_lineage").and_then(|v| v.as_bool()).unwrap_or(false);
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
             let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
             let global_cons = global_dir.as_ref().and_then(|gd| {
                 db::open_consolidated_db(&gd.join("consolidated.db")).ok()
             });
-            context::format_context(&cons_conn, &raw_conn, global_cons.as_ref(), compact, query, limit)
+            context::format_context(
+                &cons_conn,
+                &raw_conn,
+                global_cons.as_ref(),
+                compact,
+                query,
+                limit,
+                budget_tokens,
+                include_lineage,
+            )
+        }
+        "cortex_expand" => {
+            let consolidated_id = args
+                .get("consolidated_id")
+                .and_then(|value| value.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("cortex_expand requires a consolidated_id."))?;
+            let source_offset = args.get("source_offset").and_then(|value| value.as_u64()).unwrap_or(0) as usize;
+            let source_limit = args
+                .get("source_limit")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(10)
+                .clamp(1, 100) as usize;
+            let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
+            let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
+            let consolidated = db::get_consolidated_by_id(&cons_conn, consolidated_id)?
+                .ok_or_else(|| anyhow::anyhow!("No project consolidated memory #{consolidated_id}."))?;
+            let sources = db::get_memories_by_ids(&raw_conn, &consolidated.source_ids, source_offset, source_limit)?;
+            let next_source_offset = source_offset.saturating_add(source_limit);
+            let next_source_offset = (next_source_offset < consolidated.source_ids.len()).then_some(next_source_offset);
+            Ok(serde_json::to_string_pretty(&serde_json::json!({
+                "consolidated": consolidated,
+                "source_offset": source_offset,
+                "next_source_offset": next_source_offset,
+                "sources": sources,
+            }))?)
         }
         "cortex_sleep" => {
             let micro = args.get("micro").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -316,5 +382,78 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
             Ok(serde_json::to_string_pretty(&stats_json)?)
         }
         _ => anyhow::bail!("Unknown tool: {}", name),
+    }
+}
+
+fn string_array_arg(args: &Value, name: &str) -> Result<Vec<String>> {
+    let Some(value) = args.get(name) else {
+        return Ok(vec![]);
+    };
+    let values = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("{name} must be an array of strings."))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow::anyhow!("{name} must be an array of strings."))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn expand_recovers_lineage_in_bounded_source_pages() {
+        let root = std::env::temp_dir().join(format!("cortex-expand-{}", uuid::Uuid::new_v4()));
+        let cortex_dir = root.join(".cortex");
+        std::fs::create_dir_all(&cortex_dir).unwrap();
+        let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db")).unwrap();
+        let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db")).unwrap();
+        let raw_id = db::save_memory_with_artifact_refs(
+            &raw_conn,
+            "Retain the checkpoint before retrying the upload.",
+            "decision",
+            "codex-thread-123",
+            &["file:///private/tmp/upload-trace.json".to_string()],
+        )
+        .unwrap();
+        let consolidated_id = db::insert_consolidated(
+            &cons_conn,
+            "Retries preserve the upload checkpoint.",
+            "decision",
+            &[raw_id],
+            1.0,
+        )
+        .unwrap();
+
+        let response = call_tool(
+            "cortex_expand",
+            &serde_json::json!({ "consolidated_id": consolidated_id, "source_limit": 1 }),
+            &cortex_dir,
+            "server-session",
+            &None,
+        )
+        .await
+        .unwrap();
+        let expanded: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(expanded["consolidated"]["id"], consolidated_id);
+        assert_eq!(expanded["sources"][0]["session_id"], "codex-thread-123");
+        assert_eq!(
+            expanded["sources"][0]["artifact_refs"][0],
+            "file:///private/tmp/upload-trace.json"
+        );
+        assert!(expanded["sources"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("checkpoint"));
+
+        drop(raw_conn);
+        drop(cons_conn);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
