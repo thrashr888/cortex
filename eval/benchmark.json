@@ -674,6 +674,31 @@
       "disallowed_global_keys": ["upload_cap_loose_global"],
       "required_context_substrings": ["Upload retry cap should stay at 5 seconds"],
       "forbidden_context_substrings": ["Global Knowledge", "stretch cap windows to 30 seconds"]
+    },
+    {
+      "name": "budgeted context keeps top evidence and lineage without noise",
+      "query": "upload deadline rollback",
+      "limit": 3,
+      "context_budget_tokens": 80,
+      "include_lineage": true,
+      "project_memories": [
+        {
+          "key": "rollback_checkpoint",
+          "content": "For upload deadline rollbacks, preserve the resumable multipart checkpoint before retrying.",
+          "type": "decision",
+          "confidence": 1.0
+        },
+        {
+          "key": "dashboard_distractor",
+          "content": "The upload deadline dashboard preview adds rollback badges, diagnostic panels, and verbose operator guidance.",
+          "type": "pattern",
+          "confidence": 0.3
+        }
+      ],
+      "expected_project_keys": ["rollback_checkpoint"],
+      "disallowed_project_keys": ["dashboard_distractor"],
+      "required_context_substrings": ["resumable multipart checkpoint", "memory #1", "evidence: 1"],
+      "forbidden_context_substrings": ["dashboard preview"]
     }
   ]
 }

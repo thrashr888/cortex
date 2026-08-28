@@ -26,6 +26,8 @@ cortex init
 cortex save "Always use eager loading for UserList queries" --type pattern
 cortex save "Fixed race condition in upload handler" --type bugfix
 cortex save "Chose SQLite over Postgres for simplicity" --type decision
+# Keep large logs, snapshots, and media in their original store; save only their stable refs.
+cortex save "Linker failure is in the retained build log" --artifact-ref file:///tmp/build.log
 
 # Search memories (includes global knowledge automatically)
 cortex recall "performance"
@@ -39,7 +41,7 @@ cortex stats
 
 Cortex uses a two-database architecture inspired by how human memory works:
 
-- **raw.db** (gitignored) — Fast episodic memory. Every observation saved during work.
+- **raw.db** (gitignored) — Fast episodic memory. Every concise observation saved during work, plus opaque references to supporting artifacts (never their payloads).
 - **consolidated.db** (committed) — Long-term memory. Merged patterns, resolved contradictions, high-confidence learnings.
 - **skills/** (committed) — Auto-generated markdown skill files from consolidated patterns.
 
@@ -95,13 +97,13 @@ cortex dream
 | Command | Description |
 |---------|-------------|
 | `cortex init` | Initialize `.cortex/` in current directory |
-| `cortex save <text> --type <type>` | Save a memory (types: bugfix, decision, pattern, preference, observation) |
+| `cortex save <text> --type <type>` | Save a memory (types: bugfix, decision, pattern, preference, observation); optional `--artifact-ref` stores only stable artifact references |
 | `cortex recall <query>` | FTS5 search across project + global memory |
 | `cortex stats [--global]` | Memory health (counts, last sleep) |
 | `cortex sleep [--micro] [--global]` | Run consolidation |
 | `cortex dream [--global]` | Deep reflection (2-3 LLM calls) |
 | `cortex wake` | Session start catch-up + context output |
-| `cortex context [--compact]` | Output memory context for prompt injection |
+| `cortex context [--compact]` | Output memory context for prompt injection; optional `--budget-tokens` packs to an approximate prompt budget and `--include-lineage` exposes evidence IDs |
 | `cortex eval [--fixture eval/benchmark.json] [--json]` | Run the deterministic memory-quality benchmark |
 | `cortex mcp` | Start MCP stdio server |
 
@@ -136,7 +138,11 @@ Add to your project's `.mcp.json`:
 }
 ```
 
-Exposes 5 tools: `cortex_save`, `cortex_recall`, `cortex_context`, `cortex_sleep`, `cortex_stats`. All tools automatically include global memory — recall and context blend both stores, and sleep promotes cross-project patterns to global.
+Exposes 6 tools: `cortex_save`, `cortex_recall`, `cortex_context`, `cortex_expand`, `cortex_sleep`, `cortex_stats`. All tools automatically include global memory — recall and context blend both stores, and sleep promotes cross-project patterns to global.
+
+### Evidence, sessions, and large artifacts
+
+The normal save/recall flow remains concise. Integrations that need durable provenance can set `CORTEX_SESSION_ID`, pass `--session-id`, or provide `session_id` to `cortex_save`. Pass `artifact_refs` to `cortex_save` for large logs, snapshots, or media: Cortex stores the reference, never the artifact bytes. `cortex context --include-lineage` exposes consolidated memory and source IDs; call `cortex_expand` with a consolidated ID to retrieve its source observations in bounded pages. Use `--budget-tokens` or the MCP `budget_tokens` parameter only when an agent has a specific prompt budget to respect.
 
 ## Claude Code Hooks
 

@@ -37,6 +37,12 @@ enum Commands {
         /// Type: bugfix, decision, pattern, preference, observation
         #[arg(long, default_value = "observation")]
         r#type: String,
+        /// Stable reference(s) to supporting artifacts. Cortex stores only these refs, never artifact payloads.
+        #[arg(long = "artifact-ref", value_name = "REF")]
+        artifact_refs: Vec<String>,
+        /// Stable host session identifier. Defaults to CORTEX_SESSION_ID or a generated ID.
+        #[arg(long)]
+        session_id: Option<String>,
     },
     /// Search project memory
     Recall {
@@ -101,6 +107,12 @@ enum Commands {
         /// Max number of relevant memories to include (default: 15)
         #[arg(short, long, default_value = "15")]
         limit: usize,
+        /// Approximate maximum tokens to pack; only changes output when explicitly set.
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+        /// Include memory and source IDs for evidence recovery.
+        #[arg(long)]
+        include_lineage: bool,
     },
     /// Evaluate memory retrieval/context quality against a fixed benchmark
     Eval {
@@ -112,7 +124,11 @@ enum Commands {
         json: bool,
     },
     /// Start MCP stdio server
-    Mcp,
+    Mcp {
+        /// Stable host session identifier. Defaults to CORTEX_SESSION_ID or a generated ID.
+        #[arg(long)]
+        session_id: Option<String>,
+    },
 }
 
 fn find_cortex_dir(base: &Option<PathBuf>) -> Result<PathBuf> {
@@ -130,8 +146,18 @@ fn find_cortex_dir(base: &Option<PathBuf>) -> Result<PathBuf> {
     Ok(cortex_dir)
 }
 
-fn session_id() -> String {
-    uuid::Uuid::new_v4().to_string()
+fn session_id(explicit_session_id: Option<&str>) -> String {
+    explicit_session_id
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("CORTEX_SESSION_ID")
+                .ok()
+                .map(|session_id| session_id.trim().to_string())
+                .filter(|session_id| !session_id.is_empty())
+        })
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
 /// Open global consolidated DB if ~/.cortex/ exists.
@@ -150,12 +176,17 @@ async fn main() -> Result<()> {
             let base = cli.dir.unwrap_or(std::env::current_dir()?);
             init::init_cortex(&base)?;
         }
-        Commands::Save { content, r#type } => {
+        Commands::Save { content, r#type, artifact_refs, session_id: requested_session_id } => {
             let cortex_dir = find_cortex_dir(&cli.dir)?;
             let config = config::load_config(&cortex_dir)?;
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
-            let sid = session_id();
-            let id = db::save_memory(&raw_conn, &content, &r#type, &sid)?;
+            let sid = session_id(requested_session_id.as_deref());
+            let id = db::save_memory_with_artifact_refs(&raw_conn, &content, &r#type, &sid, &artifact_refs)?;
+            let artifact_suffix = if artifact_refs.is_empty() {
+                String::new()
+            } else {
+                format!(", {} artifact ref(s)", artifact_refs.len())
+            };
 
             // Try to extract entities (best-effort, don't fail save if extraction fails)
             match llm::extract_entities(&content, &config).await {
@@ -177,13 +208,13 @@ async fn main() -> Result<()> {
                         }
                     }
                     if !extraction.entities.is_empty() {
-                        eprintln!("Saved memory #{} (type: {}, {} entities extracted)", id, r#type, extraction.entities.len());
+                        eprintln!("Saved memory #{} (type: {}, {} entities extracted{})", id, r#type, extraction.entities.len(), artifact_suffix);
                     } else {
-                        eprintln!("Saved memory #{} (type: {})", id, r#type);
+                        eprintln!("Saved memory #{} (type: {}{})", id, r#type, artifact_suffix);
                     }
                 }
                 Err(_) => {
-                    eprintln!("Saved memory #{} (type: {})", id, r#type);
+                    eprintln!("Saved memory #{} (type: {}{})", id, r#type, artifact_suffix);
                 }
             }
 
@@ -225,6 +256,7 @@ async fn main() -> Result<()> {
                             importance: m.confidence,
                             session_id: None,
                             entity_ids: vec![],
+                            artifact_refs: vec![],
                         });
                     }
                 }
@@ -415,7 +447,7 @@ async fn main() -> Result<()> {
             let ctx = wake::wake(&raw_conn, &cons_conn, &config, &cortex_dir, global_cons.as_ref()).await?;
             println!("{}", ctx);
         }
-        Commands::Context { compact, query, limit } => {
+        Commands::Context { compact, query, limit, budget_tokens, include_lineage } => {
             let cortex_dir = find_cortex_dir(&cli.dir)?;
             let raw_conn = db::open_raw_db(&cortex_dir.join("raw.db"))?;
             let cons_conn = db::open_consolidated_db(&cortex_dir.join("consolidated.db"))?;
@@ -427,6 +459,8 @@ async fn main() -> Result<()> {
                 compact,
                 query.as_deref(),
                 limit,
+                budget_tokens,
+                include_lineage,
             )?;
             println!("{}", ctx);
         }
@@ -444,9 +478,9 @@ async fn main() -> Result<()> {
                 println!("{}", eval::format_report(&report));
             }
         }
-        Commands::Mcp => {
+        Commands::Mcp { session_id: requested_session_id } => {
             let cortex_dir = find_cortex_dir(&cli.dir)?;
-            let sid = session_id();
+            let sid = session_id(requested_session_id.as_deref());
             let global_dir = init::find_global_dir();
             mcp::run_mcp_server(cortex_dir, sid, global_dir).await?;
         }

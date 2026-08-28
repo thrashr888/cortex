@@ -1,8 +1,13 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 use crate::models::{ConsolidatedMemory, Entity, Memory, Relationship, Skill, Stats};
+
+/// Cortex memories are concise observations. Large artifacts belong in their
+/// original store and are linked by opaque references instead of copied here.
+pub const MAX_MEMORY_CONTENT_BYTES: usize = 16 * 1024;
+pub const MAX_ARTIFACT_REF_BYTES: usize = 4 * 1024;
 
 pub fn open_raw_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
@@ -18,7 +23,8 @@ pub fn open_raw_db(path: &Path) -> Result<Connection> {
             consolidated INTEGER NOT NULL DEFAULT 0,
             importance REAL NOT NULL DEFAULT 0.5,
             session_id TEXT,
-            entity_ids TEXT NOT NULL DEFAULT '[]'
+            entity_ids TEXT NOT NULL DEFAULT '[]',
+            artifact_refs TEXT NOT NULL DEFAULT '[]'
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(content, type, content=memories, content_rowid=id, tokenize='porter unicode61');
         CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -39,6 +45,13 @@ pub fn open_raw_db(path: &Path) -> Result<Connection> {
         .is_ok();
     if !has_entity_ids {
         conn.execute_batch("ALTER TABLE memories ADD COLUMN entity_ids TEXT NOT NULL DEFAULT '[]';")?;
+    }
+
+    let has_artifact_refs = conn
+        .prepare("SELECT artifact_refs FROM memories LIMIT 0")
+        .is_ok();
+    if !has_artifact_refs {
+        conn.execute_batch("ALTER TABLE memories ADD COLUMN artifact_refs TEXT NOT NULL DEFAULT '[]';")?;
     }
 
     // Create entities table
@@ -156,11 +169,58 @@ pub fn open_consolidated_db(path: &Path) -> Result<Connection> {
 // --- Memory CRUD ---
 
 pub fn save_memory(conn: &Connection, content: &str, mem_type: &str, session_id: &str) -> Result<i64> {
+    save_memory_with_artifact_refs(conn, content, mem_type, session_id, &[])
+}
+
+pub fn save_memory_with_artifact_refs(
+    conn: &Connection,
+    content: &str,
+    mem_type: &str,
+    session_id: &str,
+    artifact_refs: &[String],
+) -> Result<i64> {
+    validate_memory_content(content)?;
+    let artifact_refs = normalize_artifact_refs(artifact_refs)?;
+    let artifact_refs_json = serde_json::to_string(&artifact_refs)?;
     conn.execute(
-        "INSERT INTO memories (content, type, session_id) VALUES (?1, ?2, ?3)",
-        params![content, mem_type, session_id],
+        "INSERT INTO memories (content, type, session_id, artifact_refs) VALUES (?1, ?2, ?3, ?4)",
+        params![content, mem_type, session_id, artifact_refs_json],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+fn validate_memory_content(content: &str) -> Result<()> {
+    if content.trim().is_empty() {
+        anyhow::bail!("Memory content cannot be empty.");
+    }
+    if content.len() > MAX_MEMORY_CONTENT_BYTES {
+        anyhow::bail!(
+            "Memory content is {} bytes; Cortex stores concise observations, not large artifacts. Save a summary plus artifact_refs instead (maximum {} bytes).",
+            content.len(),
+            MAX_MEMORY_CONTENT_BYTES,
+        );
+    }
+    Ok(())
+}
+
+fn normalize_artifact_refs(artifact_refs: &[String]) -> Result<Vec<String>> {
+    let mut normalized = Vec::with_capacity(artifact_refs.len());
+    for artifact_ref in artifact_refs {
+        let artifact_ref = artifact_ref.trim();
+        if artifact_ref.is_empty() {
+            anyhow::bail!("Artifact references cannot be empty.");
+        }
+        if artifact_ref.len() > MAX_ARTIFACT_REF_BYTES {
+            anyhow::bail!(
+                "Artifact reference is too large (maximum {} bytes). Pass a stable URI or path, not artifact content.",
+                MAX_ARTIFACT_REF_BYTES,
+            );
+        }
+        if !normalized.iter().any(|existing| existing == artifact_ref) {
+            normalized.push(artifact_ref.to_string());
+        }
+    }
+    Ok(normalized)
 }
 
 pub fn save_memory_with_entities(
@@ -170,6 +230,7 @@ pub fn save_memory_with_entities(
     session_id: &str,
     entity_ids: &[i64],
 ) -> Result<i64> {
+    validate_memory_content(content)?;
     let entity_json = serde_json::to_string(entity_ids)?;
     conn.execute(
         "INSERT INTO memories (content, type, session_id, entity_ids) VALUES (?1, ?2, ?3, ?4)",
@@ -203,7 +264,7 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
 
     let mut stmt = conn.prepare(
         "SELECT m.id, m.content, m.type, m.created_at, m.accessed_at,
-                m.access_count, m.consolidated, m.importance, m.session_id, m.entity_ids
+                m.access_count, m.consolidated, m.importance, m.session_id, m.entity_ids, m.artifact_refs
          FROM memories_fts f
          JOIN memories m ON f.rowid = m.id
          WHERE memories_fts MATCH ?1
@@ -213,6 +274,8 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
     let rows = stmt.query_map(params![fts_query, candidate_limit(limit) as i64], |row| {
         let entity_ids_str: String = row.get(9)?;
         let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
+        let artifact_refs_str: String = row.get(10)?;
+        let artifact_refs: Vec<String> = serde_json::from_str(&artifact_refs_str).unwrap_or_default();
         Ok(Memory {
             id: row.get(0)?,
             content: row.get(1)?,
@@ -224,6 +287,7 @@ pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<V
             importance: row.get(7)?,
             session_id: row.get(8)?,
             entity_ids,
+            artifact_refs,
         })
     })?;
     let mut memories = Vec::new();
@@ -280,7 +344,7 @@ pub fn recall_by_entity(conn: &Connection, entity_name: &str, include_neighbors:
     // We use json_each to check if entity_ids array contains any of our target IDs
     let query = format!(
         "SELECT DISTINCT m.id, m.content, m.type, m.created_at, m.accessed_at,
-                m.access_count, m.consolidated, m.importance, m.session_id, m.entity_ids
+                m.access_count, m.consolidated, m.importance, m.session_id, m.entity_ids, m.artifact_refs
          FROM memories m, json_each(m.entity_ids) e
          WHERE e.value IN ({})
          ORDER BY m.accessed_at DESC
@@ -299,6 +363,8 @@ pub fn recall_by_entity(conn: &Connection, entity_name: &str, include_neighbors:
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
         let entity_ids_str: String = row.get(9)?;
         let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
+        let artifact_refs_str: String = row.get(10)?;
+        let artifact_refs: Vec<String> = serde_json::from_str(&artifact_refs_str).unwrap_or_default();
         Ok(Memory {
             id: row.get(0)?,
             content: row.get(1)?,
@@ -310,6 +376,7 @@ pub fn recall_by_entity(conn: &Connection, entity_name: &str, include_neighbors:
             importance: row.get(7)?,
             session_id: row.get(8)?,
             entity_ids,
+            artifact_refs,
         })
     })?;
 
@@ -327,12 +394,14 @@ pub fn get_unconsolidated_count(conn: &Connection) -> Result<i64> {
 
 pub fn get_unconsolidated_memories(conn: &Connection) -> Result<Vec<Memory>> {
     let mut stmt = conn.prepare(
-        "SELECT id, content, type, created_at, accessed_at, access_count, consolidated, importance, session_id, entity_ids
+        "SELECT id, content, type, created_at, accessed_at, access_count, consolidated, importance, session_id, entity_ids, artifact_refs
          FROM memories WHERE consolidated = 0 ORDER BY created_at ASC",
     )?;
     let rows = stmt.query_map([], |row| {
         let entity_ids_str: String = row.get(9)?;
         let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
+        let artifact_refs_str: String = row.get(10)?;
+        let artifact_refs: Vec<String> = serde_json::from_str(&artifact_refs_str).unwrap_or_default();
         Ok(Memory {
             id: row.get(0)?,
             content: row.get(1)?,
@@ -344,9 +413,51 @@ pub fn get_unconsolidated_memories(conn: &Connection) -> Result<Vec<Memory>> {
             importance: row.get(7)?,
             session_id: row.get(8)?,
             entity_ids,
+            artifact_refs,
         })
     })?;
     rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+pub fn get_memory_by_id(conn: &Connection, id: i64) -> Result<Option<Memory>> {
+    conn.query_row(
+        "SELECT id, content, type, created_at, accessed_at, access_count, consolidated, importance, session_id, entity_ids, artifact_refs
+         FROM memories WHERE id = ?1",
+        params![id],
+        memory_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn get_memories_by_ids(conn: &Connection, ids: &[i64], offset: usize, limit: usize) -> Result<Vec<Memory>> {
+    let mut memories = Vec::new();
+    for id in ids.iter().skip(offset).take(limit) {
+        if let Some(memory) = get_memory_by_id(conn, *id)? {
+            memories.push(memory);
+        }
+    }
+    Ok(memories)
+}
+
+fn memory_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Memory> {
+    let entity_ids_str: String = row.get(9)?;
+    let entity_ids: Vec<i64> = serde_json::from_str(&entity_ids_str).unwrap_or_default();
+    let artifact_refs_str: String = row.get(10)?;
+    let artifact_refs: Vec<String> = serde_json::from_str(&artifact_refs_str).unwrap_or_default();
+    Ok(Memory {
+        id: row.get(0)?,
+        content: row.get(1)?,
+        r#type: row.get(2)?,
+        created_at: row.get(3)?,
+        accessed_at: row.get(4)?,
+        access_count: row.get(5)?,
+        consolidated: row.get::<_, i64>(6)? != 0,
+        importance: row.get(7)?,
+        session_id: row.get(8)?,
+        entity_ids,
+        artifact_refs,
+    })
 }
 
 pub fn mark_consolidated(conn: &Connection, ids: &[i64]) -> Result<()> {
@@ -588,6 +699,34 @@ pub fn get_all_consolidated(conn: &Connection) -> Result<Vec<ConsolidatedMemory>
         })
     })?;
     rows.into_iter().map(|r| Ok(r?)).collect()
+}
+
+pub fn get_consolidated_by_id(conn: &Connection, id: i64) -> Result<Option<ConsolidatedMemory>> {
+    conn.query_row(
+        "SELECT id, content, type, source_ids, confidence, created_at, updated_at, access_count, active, superseded_by
+         FROM consolidated WHERE id = ?1",
+        params![id],
+        consolidated_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn consolidated_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsolidatedMemory> {
+    let source_ids_str: String = row.get(3)?;
+    let source_ids: Vec<i64> = serde_json::from_str(&source_ids_str).unwrap_or_default();
+    Ok(ConsolidatedMemory {
+        id: row.get(0)?,
+        content: row.get(1)?,
+        r#type: row.get(2)?,
+        source_ids,
+        confidence: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        access_count: row.get(7)?,
+        active: row.get::<_, i64>(8)? != 0,
+        superseded_by: row.get(9)?,
+    })
 }
 
 pub fn search_consolidated(conn: &Connection, query: &str, limit: usize) -> Result<Vec<ConsolidatedMemory>> {
@@ -1082,4 +1221,50 @@ fn build_fts_query(query: &str) -> String {
         .map(|term| format!("{}*", term))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("cortex-{name}-{}.db", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn artifact_refs_and_session_identity_are_preserved_without_artifact_payloads() {
+        let path = test_db_path("artifact-refs");
+        let conn = open_raw_db(&path).unwrap();
+        let artifact_refs = vec![
+            "file:///private/tmp/build-log.txt".to_string(),
+            "sha256:0123456789abcdef".to_string(),
+        ];
+        let id = save_memory_with_artifact_refs(
+            &conn,
+            "The build failed after the linker phase; inspect the retained log.",
+            "bugfix",
+            "host-session-42",
+            &artifact_refs,
+        )
+        .unwrap();
+
+        let memory = get_memory_by_id(&conn, id).unwrap().unwrap();
+        assert_eq!(memory.session_id.as_deref(), Some("host-session-42"));
+        assert_eq!(memory.artifact_refs, artifact_refs);
+        assert!(!memory.content.contains("build-log.txt"));
+
+        let oversized = "x".repeat(MAX_MEMORY_CONTENT_BYTES + 1);
+        let error = save_memory_with_artifact_refs(
+            &conn,
+            &oversized,
+            "observation",
+            "host-session-42",
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not large artifacts"));
+
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
+    }
 }
