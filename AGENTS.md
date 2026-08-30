@@ -1,33 +1,51 @@
-This is cortex — a repo-local cognitive memory system for AI agents, built in Rust.
+# Agent Instructions
 
-## Project Memory
+This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
-This project uses itself for memory. Use the `cortex_save` MCP tool to save learnings after fixing bugs, making decisions, or discovering patterns. Use `cortex_recall` to search past knowledge.
+> **Architecture in one line:** Issues live in a local Dolt database
+> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
+> git-compatible protocol), stored under `refs/dolt/data` on your git
+> remote — separate from `refs/heads/*` where your code lives.
+> `.beads/issues.jsonl` is a passive export, not the wire protocol.
+>
+> See [SYNC_CONCEPTS.md](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)
+> for the one-screen overview and anti-patterns (don't treat JSONL as the
+> source of truth; don't `bd import` during normal operation; don't
+> reach for third-party Dolt hosting before trying the default).
 
-## Architecture
-
-- `src/main.rs` — CLI entry point (clap)
-- `src/db.rs` — SQLite + FTS5 operations (raw.db + consolidated.db)
-- `src/sleep.rs` — Consolidation (micro: SQL-only, quick: 1 LLM call)
-- `src/dream.rs` — Deep reflection (2-3 LLM calls)
-- `src/mcp.rs` — MCP stdio server (JSON-RPC)
-- `src/llm.rs` — Anthropic API client
-- `src/models.rs` — Data structures
-- `src/config.rs` — TOML config
-- `src/context.rs` — Context formatting
-- `src/skills.rs` — Skill file generation
-- `src/wake.rs` — Session start catch-up
-- `src/init.rs` — Project initialization
-
-## Build & Test
+## Quick Reference
 
 ```bash
-cargo build
-cargo test
-cortex init    # if .cortex/ doesn't exist
-cortex stats
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work atomically
+bd close <id>         # Complete work
+bd dolt push          # Push beads data to remote
 ```
 
+## Non-Interactive Shell Commands
+
+**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
+
+Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+
+**Use these forms instead:**
+```bash
+# Force overwrite without prompting
+cp -f source dest           # NOT: cp source dest
+mv -f source dest           # NOT: mv source dest
+rm -f file                  # NOT: rm file
+
+# For recursive operations
+rm -rf directory            # NOT: rm -r directory
+cp -rf source dest          # NOT: cp -r source dest
+```
+
+**Other commands that may prompt:**
+- `scp` - use `-o BatchMode=yes` for non-interactive
+- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
+- `apt-get` - use `-y` flag
+- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
 ## Beads Issue Tracker

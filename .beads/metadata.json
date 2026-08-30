@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "cortex",
+  "project_id": "bbd12e7c-e9e5-41fd-985d-f8e9f82e8c04"
+}
