@@ -72,6 +72,86 @@ Rules:
     Ok(result)
 }
 
+/// Most memories one batched extraction call covers.
+pub const EXTRACT_BATCH: usize = 40;
+
+#[derive(Deserialize)]
+struct BatchExtraction {
+    #[serde(default)]
+    memories: Vec<BatchItem>,
+}
+
+#[derive(Deserialize)]
+struct BatchItem {
+    id: i64,
+    #[serde(flatten)]
+    extraction: crate::models::ExtractionResult,
+}
+
+/// Extract entities and relationships for several memories in one LLM call. Used by sleep for
+/// memories saved without extraction (`extract_on_save = false`) or whose extraction failed.
+pub async fn extract_entities_batch(
+    memories: &[(i64, &str)],
+    config: &Config,
+) -> Result<Vec<(i64, crate::models::ExtractionResult)>> {
+    if memories.is_empty() {
+        return Ok(vec![]);
+    }
+    let listed = serde_json::to_string_pretty(
+        &memories
+            .iter()
+            .map(|(id, content)| serde_json::json!({"id": id, "content": content}))
+            .collect::<Vec<_>>(),
+    )?;
+    let prompt = format!(
+        r#"Extract entities and relationships from each of these memories:
+
+{listed}
+
+Output JSON:
+{{
+  "memories": [
+    {{
+      "id": 1,
+      "entities": [
+        {{"name": "EntityName", "type": "language|technology|service|pattern|concept|tool|framework|person", "description": "Short description"}}
+      ],
+      "relationships": [
+        {{"source": "EntityA", "target": "EntityB", "type": "uses|implements|related_to|alternative_to|caused_by|used_for", "confidence": 0.0-1.0}}
+      ]
+    }}
+  ]
+}}
+
+Rules:
+- One entry per memory, with its id
+- Extract concrete entities (technologies, languages, services, concepts, tools, people)
+- Use canonical names (e.g., "Rust" not "rust lang", "SQLite" not "sqlite")
+- Only extract entities that are clearly mentioned
+- A memory with no clear entities gets empty arrays
+- Output ONLY valid JSON"#
+    );
+
+    let system = "You are an entity extraction system. Extract structured entities and relationships from text. Output ONLY valid JSON.";
+    let response = call_anthropic(&prompt, system, config).await?;
+    Ok(parse_batch_extraction(&response, memories))
+}
+
+/// Keeps only entries for memories that were asked about.
+fn parse_batch_extraction(
+    response: &str,
+    memories: &[(i64, &str)],
+) -> Vec<(i64, crate::models::ExtractionResult)> {
+    let parsed: BatchExtraction = serde_json::from_str(extract_json_from_response(response))
+        .unwrap_or(BatchExtraction { memories: vec![] });
+    parsed
+        .memories
+        .into_iter()
+        .filter(|item| memories.iter().any(|(id, _)| *id == item.id))
+        .map(|item| (item.id, item.extraction))
+        .collect()
+}
+
 fn extract_json_from_response(text: &str) -> &str {
     if let Some(start) = text.find("```json") {
         let content = &text[start + 7..];
@@ -96,18 +176,40 @@ fn extract_json_from_response(text: &str) -> &str {
 pub async fn call_anthropic(prompt: &str, system: &str, config: &Config) -> Result<String> {
     // Check if we have a direct API key (non-empty)
     let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+    let headers = request_headers(|key| std::env::var(key).ok());
+    let has_bearer = headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("authorization"));
 
-    if !api_key.is_empty() {
-        call_direct_api(prompt, system, config, &api_key).await
+    if !api_key.is_empty() || has_bearer {
+        call_direct_api(prompt, system, config, &api_key, &headers).await
     } else if resolve_aws_credentials().is_some() {
         call_bedrock(prompt, system, config).await
     } else {
         anyhow::bail!(
             "No LLM credentials found. Set ANTHROPIC_API_KEY for direct API, \
+             ANTHROPIC_AUTH_TOKEN or an Authorization header in CORTEX_HEADERS for a gateway, \
              or AWS credentials (env vars or ~/.aws/credentials) for Bedrock. \
              Run `cortex sleep --micro` for LLM-free consolidation."
         )
     }
+}
+
+/// Extra headers for the direct API: `CORTEX_HEADERS` (a JSON object of strings, such as a
+/// gateway's workspace header) and `ANTHROPIC_AUTH_TOKEN` as a bearer token. This lets a host
+/// that already holds the agent's model access (pi-cortex passes pi's) hand it to Cortex.
+fn request_headers(var: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    let mut headers: Vec<(String, String)> = var("CORTEX_HEADERS")
+        .and_then(|json| serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(&json).ok())
+        .map(|map| {
+            map.into_iter()
+                .filter_map(|(name, value)| value.as_str().map(|v| (name, v.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(token) = var("ANTHROPIC_AUTH_TOKEN").filter(|t| !t.is_empty()) {
+        headers.retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
+        headers.push(("Authorization".to_string(), format!("Bearer {}", token)));
+    }
+    headers
 }
 
 /// AWS credential triple
@@ -186,7 +288,13 @@ fn resolve_aws_credentials() -> Option<AwsCreds> {
     }
 }
 
-async fn call_direct_api(prompt: &str, system: &str, config: &Config, api_key: &str) -> Result<String> {
+async fn call_direct_api(
+    prompt: &str,
+    system: &str,
+    config: &Config,
+    api_key: &str,
+    headers: &[(String, String)],
+) -> Result<String> {
     let base_url = std::env::var("ANTHROPIC_BASE_URL")
         .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
 
@@ -201,11 +309,17 @@ async fn call_direct_api(prompt: &str, system: &str, config: &Config, api_key: &
         }],
     };
 
-    let resp = client
-        .post(format!("{}/v1/messages", base_url))
-        .header("x-api-key", api_key)
+    let mut request = client
+        .post(format!("{}/v1/messages", base_url.trim_end_matches('/').trim_end_matches("/v1")))
         .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    if !api_key.is_empty() {
+        request = request.header("x-api-key", api_key);
+    }
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    let resp = request
         .json(&body)
         .send()
         .await
@@ -507,4 +621,43 @@ fn sha256_impl(data: &[u8]) -> [u8; 32] {
         result[i*4..i*4+4].copy_from_slice(&val.to_be_bytes());
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_extraction_keeps_only_asked_memories() {
+        let response = r#"```json
+{"memories": [
+  {"id": 3, "entities": [{"name": "Rust", "type": "language"}], "relationships": []},
+  {"id": 99, "entities": [{"name": "Go", "type": "language"}]}
+]}
+```"#;
+        let got = parse_batch_extraction(response, &[(3, "Paul likes Rust"), (4, "nothing here")]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, 3);
+        assert_eq!(got[0].1.entities[0].name, "Rust");
+    }
+
+    #[test]
+    fn headers_come_from_cortex_headers_and_auth_token() {
+        let headers = request_headers(|key| match key {
+            "CORTEX_HEADERS" => Some(r#"{"x-workspace": "ember", "Authorization": "Bearer old", "n": 1}"#.into()),
+            "ANTHROPIC_AUTH_TOKEN" => Some("tok".into()),
+            _ => None,
+        });
+        assert_eq!(headers, vec![
+            ("x-workspace".to_string(), "ember".to_string()),
+            ("Authorization".to_string(), "Bearer tok".to_string()),
+        ]);
+        assert!(request_headers(|_| None).is_empty());
+        assert!(request_headers(|k| (k == "CORTEX_HEADERS").then(|| "not json".to_string())).is_empty());
+    }
+
+    #[test]
+    fn batch_extraction_tolerates_garbage() {
+        assert!(parse_batch_extraction("no json at all", &[(1, "x")]).is_empty());
+    }
 }

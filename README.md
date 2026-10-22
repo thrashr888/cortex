@@ -145,8 +145,24 @@ Add to `.claude/hooks/hooks.json` for automatic consolidation:
 [consolidation]
 auto_micro_threshold = 10    # Auto micro-sleep after N saves
 decay_threshold = 0.1        # Remove low-value consolidated memories
-model = "claude-haiku-4-5"  # Model for sleep/dream LLM calls
+model = "claude-haiku-5-5"  # Model for sleep/dream LLM calls
+extract_on_save = true       # LLM entity extraction on every save; false leaves it to sleep
 ```
+
+Environment overrides, for hosts that run agents (see [pi-cortex](pi-cortex/README.md)):
+
+| Variable | |
+|---|---|
+| `CORTEX_MODEL` | model for sleep/dream, over `config.toml` |
+| `CORTEX_EXTRACT_ON_SAVE` | `0` saves without an LLM call; the next sleep extracts entities for those memories in one batched call |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` | direct API (or a gateway) |
+| `ANTHROPIC_AUTH_TOKEN` | sent as `Authorization: Bearer` |
+| `CORTEX_HEADERS` | JSON object of extra headers, e.g. `{"anthropic-workspace-id": "..."}` |
+
+## Pi
+
+[pi-cortex](pi-cortex/README.md) is a pi package: Cortex tools in the agent, memory in every
+prompt, sleep when pi compacts, a nightly dream, and model access taken from pi's own login.
 
 Set `ANTHROPIC_API_KEY` for direct API access, or use AWS credentials (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` env vars or `~/.aws/credentials`) for Bedrock. Without LLM credentials, only micro sleep (SQL-only) works.
 
