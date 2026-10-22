@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **pi-cortex** (`pi-cortex/`): a pi package that gives pi agents Cortex memory: `cortex_save` and `cortex_recall` tools, memory in every prompt, sleep on compaction, a nightly dream, and model access taken from pi's own login.
+- `CORTEX_MODEL` and `CORTEX_EXTRACT_ON_SAVE` environment overrides.
+- `extract_on_save` config (default true). When off, `sleep` extracts entities for unprocessed memories in one batched LLM call.
+- `ANTHROPIC_AUTH_TOKEN` (bearer) and `CORTEX_HEADERS` (extra headers as JSON) for gateways and hosts that pass their own model access.
+
+### Changed
+- Default model for new stores is `claude-haiku-5-5`.
+- `ANTHROPIC_BASE_URL` may end in `/v1`.
+
 ## [0.4.0] - 2026-03-05
 
 ### Added

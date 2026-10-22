@@ -1,0 +1,20 @@
+{
+  "name": "pi-cortex",
+  "version": "0.1.0",
+  "description": "Cortex memory for pi: saves and recalls what the agent learns, consolidates it when pi compacts, and dreams nightly. Built for long-lived sessions such as pi-durable.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Paul Thrasher",
+  "repository": { "type": "git", "url": "git+https://github.com/thrashr888/cortex.git", "directory": "pi-cortex" },
+  "homepage": "https://github.com/thrashr888/cortex/tree/main/pi-cortex#readme",
+  "keywords": ["pi-package", "pi-extension", "memory", "cortex", "sqlite"],
+  "files": ["index.ts", "cortex.ts", "README.md"],
+  "pi": { "extensions": ["./index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  }
+}

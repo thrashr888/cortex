@@ -180,32 +180,17 @@ async fn call_tool(name: &str, args: &Value, cortex_dir: &PathBuf, session_id: &
                 let config = config::load_config(cortex_dir)?;
                 let id = db::save_memory(&raw_conn, content, mem_type, session_id)?;
 
-                // Try to extract entities (best-effort)
-                let entity_msg = match llm::extract_entities(content, &config).await {
-                    Ok(extraction) => {
-                        let mut entity_ids = Vec::new();
-                        for entity in &extraction.entities {
-                            if let Ok(eid) = db::upsert_entity(&raw_conn, &entity.name, &entity.r#type, entity.description.as_deref()) {
-                                entity_ids.push(eid);
-                            }
-                        }
-                        if !entity_ids.is_empty() {
-                            let _ = db::update_memory_entities(&raw_conn, id, &entity_ids);
-                        }
-                        for rel in &extraction.relationships {
-                            let source = db::get_entity_by_name(&raw_conn, &rel.source).ok().flatten();
-                            let target = db::get_entity_by_name(&raw_conn, &rel.target).ok().flatten();
-                            if let (Some(s), Some(t)) = (source, target) {
-                                let _ = db::upsert_relationship(&raw_conn, s.id, t.id, &rel.r#type, id, rel.confidence);
-                            }
-                        }
-                        if extraction.entities.is_empty() {
-                            String::new()
-                        } else {
-                            format!(", {} entities extracted", extraction.entities.len())
-                        }
+                // Extract entities now (best-effort), or leave it to the next sleep's batched call.
+                let entity_msg = if config.consolidation.extract_on_save {
+                    match llm::extract_entities(content, &config).await {
+                        Ok(extraction) => match db::apply_extraction(&raw_conn, id, &extraction) {
+                            0 => String::new(),
+                            n => format!(", {} entities extracted", n),
+                        },
+                        Err(_) => String::new(),
                     }
-                    Err(_) => String::new(),
+                } else {
+                    String::new()
                 };
 
                 let uncons = db::get_unconsolidated_count(&raw_conn)?;

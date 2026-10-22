@@ -147,34 +147,19 @@ async fn main() -> Result<()> {
             let sid = session_id();
             let id = db::save_memory(&raw_conn, &content, &r#type, &sid)?;
 
-            // Try to extract entities (best-effort, don't fail save if extraction fails)
-            match llm::extract_entities(&content, &config).await {
-                Ok(extraction) => {
-                    let mut entity_ids = Vec::new();
-                    for entity in &extraction.entities {
-                        if let Ok(eid) = db::upsert_entity(&raw_conn, &entity.name, &entity.r#type, entity.description.as_deref()) {
-                            entity_ids.push(eid);
-                        }
-                    }
-                    if !entity_ids.is_empty() {
-                        let _ = db::update_memory_entities(&raw_conn, id, &entity_ids);
-                    }
-                    for rel in &extraction.relationships {
-                        let source = db::get_entity_by_name(&raw_conn, &rel.source).ok().flatten();
-                        let target = db::get_entity_by_name(&raw_conn, &rel.target).ok().flatten();
-                        if let (Some(s), Some(t)) = (source, target) {
-                            let _ = db::upsert_relationship(&raw_conn, s.id, t.id, &rel.r#type, id, rel.confidence);
-                        }
-                    }
-                    if !extraction.entities.is_empty() {
-                        eprintln!("Saved memory #{} (type: {}, {} entities extracted)", id, r#type, extraction.entities.len());
-                    } else {
-                        eprintln!("Saved memory #{} (type: {})", id, r#type);
-                    }
-                }
-                Err(_) => {
-                    eprintln!("Saved memory #{} (type: {})", id, r#type);
-                }
+            // Extract entities now (best-effort), or leave it to the next sleep's batched call.
+            let extracted = if config.consolidation.extract_on_save {
+                llm::extract_entities(&content, &config)
+                    .await
+                    .map(|extraction| db::apply_extraction(&raw_conn, id, &extraction))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            if extracted > 0 {
+                eprintln!("Saved memory #{} (type: {}, {} entities extracted)", id, r#type, extracted);
+            } else {
+                eprintln!("Saved memory #{} (type: {})", id, r#type);
             }
 
             // Auto micro-sleep

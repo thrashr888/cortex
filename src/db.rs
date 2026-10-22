@@ -175,6 +175,28 @@ pub fn update_memory_entities(conn: &Connection, id: i64, entity_ids: &[i64]) ->
     Ok(())
 }
 
+/// Stores an extraction for one memory: upserts its entities, links them to the memory and adds
+/// the relationships between known entities. Returns how many entities it stored.
+pub fn apply_extraction(conn: &Connection, memory_id: i64, extraction: &crate::models::ExtractionResult) -> usize {
+    let mut entity_ids = Vec::new();
+    for entity in &extraction.entities {
+        if let Ok(eid) = upsert_entity(conn, &entity.name, &entity.r#type, entity.description.as_deref()) {
+            entity_ids.push(eid);
+        }
+    }
+    if !entity_ids.is_empty() {
+        let _ = update_memory_entities(conn, memory_id, &entity_ids);
+    }
+    for rel in &extraction.relationships {
+        let source = get_entity_by_name(conn, &rel.source).ok().flatten();
+        let target = get_entity_by_name(conn, &rel.target).ok().flatten();
+        if let (Some(s), Some(t)) = (source, target) {
+            let _ = upsert_relationship(conn, s.id, t.id, &rel.r#type, memory_id, rel.confidence);
+        }
+    }
+    entity_ids.len()
+}
+
 pub fn recall_memories(conn: &Connection, query: &str, limit: usize) -> Result<Vec<Memory>> {
     let fts_query = build_fts_query(query);
     if fts_query.is_empty() {

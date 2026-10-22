@@ -66,6 +66,23 @@ pub async fn quick_sleep(
         return Ok(ConsolidationResult::default());
     }
 
+    // Memories saved without entities (extraction off at save time, or it failed) get them now,
+    // in one batched call, so consolidation sees the whole graph. Best-effort.
+    let missing: Vec<(i64, &str)> = unprocessed
+        .iter()
+        .filter(|m| m.entity_ids.is_empty())
+        .take(llm::EXTRACT_BATCH)
+        .map(|m| (m.id, m.content.as_str()))
+        .collect();
+    match llm::extract_entities_batch(&missing, config).await {
+        Ok(extracted) => {
+            for (id, extraction) in &extracted {
+                db::apply_extraction(raw_conn, *id, extraction);
+            }
+        }
+        Err(e) => eprintln!("Warning: entity extraction skipped: {}", e),
+    }
+
     let existing = db::get_all_consolidated(cons_conn)?;
     let entities = db::get_all_entities(raw_conn)?;
     let relationships = db::get_all_relationships(raw_conn)?;

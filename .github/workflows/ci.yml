@@ -23,3 +23,8 @@ jobs:
           ./target/release/cortex stats
           ./target/release/cortex sleep --micro
           ./target/release/cortex context --compact
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: pi-cortex
+        run: cd pi-cortex && CORTEX_BIN=../target/release/cortex npm test
