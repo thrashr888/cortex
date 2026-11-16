@@ -1,0 +1,36 @@
+name: Publish pi-cortex
+
+# Publishes pi-cortex/ to npm with trusted publishing (OIDC): no npm token anywhere. Runs when a
+# pi-cortex-v* tag is pushed, e.g. `git tag pi-cortex-v0.1.1 && git push origin pi-cortex-v0.1.1`,
+# whose version must match pi-cortex/package.json. npm must list this repo and workflow as the
+# package's trusted publisher (npmjs.com > pi-cortex > Settings > Trusted publishing).
+on:
+  push:
+    tags: ["pi-cortex-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pi-cortex
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@latest
+      - name: Check the tag matches the package version
+        if: github.event_name == 'push'
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          test "${GITHUB_REF_NAME#pi-cortex-v}" = "$version" || { echo "tag $GITHUB_REF_NAME doesn't match package.json $version"; exit 1; }
+      - run: npm test
+      - run: npm publish --access public

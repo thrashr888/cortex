@@ -38,8 +38,20 @@ pi-cortex runs the `cortex` binary: `../target/release/cortex` when it sits in a
 else `cortex` on `PATH` (`brew install thrashr888/tap/cortex`), or `CORTEX_BIN`.
 
 ```bash
-pi install /path/to/cortex/pi-cortex      # from a checkout
+brew install thrashr888/tap/cortex
+pi install npm:pi-cortex
 ```
+
+## Releasing
+
+Bump `version` in `package.json`, merge it, then push a matching tag:
+
+```bash
+git tag pi-cortex-v0.1.1 && git push origin pi-cortex-v0.1.1
+```
+
+`.github/workflows/publish-pi-cortex.yml` runs the tests and publishes to npm with trusted
+publishing (OIDC), so there's no npm token to keep.
 
 ## Settings
 
