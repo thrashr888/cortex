@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.0] - 2026-11-15
+
+### Added
+- **pi-cortex**: a pi package (in `pi-cortex/`) that gives pi agents Cortex memory: `cortex_save` and `cortex_recall` tools, memory in every prompt, consolidation when pi compacts, and a nightly dream. Built for long-lived sessions such as pi-durable. Published to npm as `pi-cortex`.
+- Hosts can pass model access to cortex through the environment, so pi-cortex runs cortex on the agent's own pi login.
+
+### Changed
+- Release binaries are built locally and attached to the GitHub release; the Homebrew formula points at them.
+
 ## [Unreleased]
 
 ### Added
